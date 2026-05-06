@@ -1,0 +1,34 @@
+# Node.js dependencies
+/node_modules/
+
+# Compiled files
+/dist/
+/build/
+/coverage/
+
+# IDE metadata
+/.idea/
+
+# Llama CLI outputs
+/.ai-index.json
+
+# Temporary files and directories
+/tmp/
+/temp/
+~/*
+
+# Other generated files
+/index.ts
+/jest.config.js
+/runners.js
+/*.js.map
+/*.d.ts
+
+# Nomic-embed-text embedding
+/ollama/embedding/
+
+# Test coverage reports
+/coverage/*
+
+# Jest test results
+/.jest-test-results.json

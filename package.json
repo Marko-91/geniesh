@@ -1,0 +1,22 @@
+{
+  "name": "ai-dev-llama-cli",
+  "version": "1.0.0",
+  "type": "module",
+  "bin": {
+    "ai": "./src/cli.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "commander": "^12.0.0"
+  },
+  "scripts": {
+    "test": "jest"
+  },
+  "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "jest": "^30.3.0",
+    "ts-jest": "^29.4.9"
+  }
+}
