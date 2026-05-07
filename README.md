@@ -1,4 +1,4 @@
-# ai-dev-llama-cli
+# geniesh
 
 A local AI developer assistant powered by **qwen3-coder** and a **RAG (Retrieval-Augmented Generation)** pipeline with **transitive grep**. Runs entirely on your machine — no API keys, no data leaving your system.
 
