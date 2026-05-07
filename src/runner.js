@@ -1,6 +1,12 @@
 import { StreamingMarkdownParser } from './md-parser.js';
-const OLLAMA_URL = 'http://localhost:11434';
-const MODEL = process.env.MODEL || 'qwen3:coder';
+import ora from 'ora';
+
+const OLLAMA_URL = process.env.OLLAMA_HOST || 'http://localhost:11434';
+let _model = process.env.MODEL || 'qwen3-coder';
+
+/** Override the model at runtime (used by CLI --model flag). */
+export function setModel(name) { _model = name; }
+export function getModel()     { return _model; }
 
 /**
  * Streams a single-turn response from Llama 3 to stdout.
@@ -10,24 +16,28 @@ const MODEL = process.env.MODEL || 'qwen3:coder';
  * @returns {Promise<void>}
  */
 export async function runQuery(prompt) {
+  const spinner = ora({ text: `Thinking (${_model})…`, spinner: 'dots' }).start();
   let res;
   try {
     res = await fetch(`${OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, prompt, stream: true }),
+      body: JSON.stringify({ model: _model, prompt, stream: true }),
     });
   } catch (err) {
+    spinner.fail('Ollama unreachable');
     throw new Error(
       `Cannot connect to Ollama at ${OLLAMA_URL}. Is Ollama running?\n  ${err.message}`,
     );
   }
 
   if (!res.ok) {
+    spinner.fail(`Model error ${res.status}`);
     const body = await res.text();
     throw new Error(`Ollama generate error ${res.status}: ${body}`);
   }
 
+  spinner.stop();
   await streamResponse(res, (obj) => obj.response ?? '');
 }
 
@@ -39,24 +49,28 @@ export async function runQuery(prompt) {
  * @returns {Promise<string>}  Full assistant response text
  */
 export async function runChat(messages) {
+  const spinner = ora({ text: `Thinking (${_model})…`, spinner: 'dots' }).start();
   let res;
   try {
     res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: MODEL, messages, stream: true }),
+      body: JSON.stringify({ model: _model, messages, stream: true }),
     });
   } catch (err) {
+    spinner.fail('Ollama unreachable');
     throw new Error(
       `Cannot connect to Ollama at ${OLLAMA_URL}. Is Ollama running?\n  ${err.message}`,
     );
   }
 
   if (!res.ok) {
+    spinner.fail(`Model error ${res.status}`);
     const body = await res.text();
     throw new Error(`Ollama chat error ${res.status}: ${body}`);
   }
 
+  spinner.stop();
   const fullResponse = await streamResponse(res, (obj) => obj.message?.content ?? '');
   return fullResponse;
 }

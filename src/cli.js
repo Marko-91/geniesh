@@ -7,8 +7,11 @@ import { extractFunction } from './extractor.js';
 import { buildIndex, loadIndex, indexExists, buildIndexFromFile } from './indexer.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt } from './prompt.js';
-import { runQuery, runChat } from './runner.js';
+import { runQuery, runChat, setModel } from './runner.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
+import { buildChatContext, applySlideWindow, extractSymbols } from './context-builder.js';
+import { scanDir } from './fs-utils.js';
+import ora from 'ora';
 
 const program = new Command();
 const icons = ['⏳', '🤔', '🧠', '🔮'];
@@ -17,7 +20,12 @@ program
   .name('ai')
   .description('Local AI developer assistant — Llama 3 + RAG (powered by Ollama)')
   .version('1.0.0')
-  .enablePositionalOptions();
+  .enablePositionalOptions()
+  .option('--model <name>', 'Ollama model to use', 'qwen3-coder')
+  .hook('preAction', (thisCommand) => {
+    const model = thisCommand.opts().model;
+    if (model) setModel(model);
+  });
 
 // ─── ai index --dir <path> ───────────────────────────────────────────────────
 
@@ -47,29 +55,46 @@ program
 
 program
   .command('chat')
-  .description('Start an interactive chat session (RAG-augmented if index exists)')
-  .action(async () => {
-    const hasIndex = await indexExists();
-    let index = null;
+  .description('Start an intelligent chat session with auto-indexing and priority RAG')
+  .option('--dir <path>', 'Directory to use for indexing/search (default: cwd)')
+  .action(async (opts) => {
+    const dir = opts.dir || process.cwd();
 
-    if (hasIndex) {
-      console.log('Index found — RAG-augmented chat enabled.\n');
+    // ─ 1. Build or load index ─────────────────────────────────────────────────
+    let index;
+    if (await indexExists()) {
+      const loadSpinner = ora('Loading index…').start();
       index = await loadIndex();
+      loadSpinner.succeed(`Index loaded — ${index.length} chunks from ${new Set(index.map(e => e.file)).size} files`);
     } else {
-      console.log('No index found. Run `ai index --dir <path>` for RAG support.\n');
+      console.log(`\n⚠️  No index found. Building index for ${dir}…\n`);
+      index = await buildIndex(dir);
     }
 
-    // System message establishes the persona for the whole session.
+    // ─ 2. Scan file list for grep ─────────────────────────────────────────────
+    const allFiles = await scanDir(dir);
+
+    // ─ 3. System prompt ───────────────────────────────────────────────────────
     const messages = [
-      { role: 'system', content: 'You are a senior software engineer. Be concise and practical.' },
+      {
+        role: 'system',
+        content:
+          'You are a senior software engineer with full access to the codebase context provided. ' +
+          'Answer questions concisely and practically. Always reference exact file names and line numbers when relevant. ' +
+          'If the answer is not in the provided context, say so clearly instead of guessing.',
+      },
     ];
 
     const rl = createInterface({ input: process.stdin, output: process.stdout });
     const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
 
-    console.log('Type your message. Type "exit" or press Ctrl+C to quit.\n');
+    console.log('\n────────────────────────────────────────────────────────────');
+    console.log('🧠  AI Chat  —  type \x1b[33mexit\x1b[0m or Ctrl+C to quit');
+    console.log(`📂  Directory : ${dir}`);
+    console.log(`🧩  Model     : ${program.opts().model || 'qwen3-coder'}`);
+    console.log(`📚  Index     : ${index.length} chunks`);
+    console.log('────────────────────────────────────────────────────────────\n');
 
-    // Graceful shutdown on Ctrl+C
     process.on('SIGINT', () => {
       console.log('\nBye!');
       rl.close();
@@ -79,7 +104,7 @@ program
     while (true) {
       let userInput;
       try {
-        userInput = await ask('You: ');
+        userInput = await ask('\x1b[32mYou\x1b[0m: ');
       } catch {
         break;
       }
@@ -91,34 +116,44 @@ program
         break;
       }
 
-      // Augment with RAG context when index is available.
-      let content = trimmed;
-      if (index) {
-        try {
-          const chunks = await search(trimmed, index, 4);
-          if (chunks.length > 0) {
-            const ctx = chunks
-              .map((c) => `// ${c.file} (lines ${c.startLine}–${c.endLine})\n${c.chunk}`)
-              .join('\n\n---\n\n')
-              .slice(0, 6000);
-            content = `Relevant code from the codebase:\n\n${ctx}\n\nQuestion: ${trimmed}`;
-          }
-        } catch {
-          // RAG failure is non-fatal — fall back to plain message
-        }
+      // ─ Build context ─────────────────────────────────────────────────────────
+      const symbols = extractSymbols(trimmed);
+      const ctxSpinner = ora({
+        text: symbols.length
+          ? `Building context (RAG + grep: ${symbols.join(', ')})…`
+          : 'Building context (RAG)…',
+        color: 'cyan',
+      }).start();
+
+      let contextText = '';
+      try {
+        contextText = await buildChatContext(trimmed, index, allFiles);
+        ctxSpinner.succeed(
+          symbols.length
+            ? `Context ready — RAG + grep hits for: ${symbols.join(', ')}`
+            : 'Context ready — RAG',
+        );
+      } catch (err) {
+        ctxSpinner.warn(`Context build failed (${err.message}), falling back to plain message`);
       }
 
-      messages.push({ role: 'user', content });
-      process.stdout.write('\nAssistant: ⏳ ');
+      const content = contextText
+        ? `Relevant codebase context:\n\n${contextText}\n\nQuestion: ${trimmed}`
+        : trimmed;
 
+      // Apply sliding window before pushing new turn
+      applySlideWindow(messages);
+      messages.push({ role: 'user', content });
+
+      // ─ LLM call ───────────────────────────────────────────────────────────────
+      process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
       try {
         const reply = await runChat(messages);
         messages.push({ role: 'assistant', content: reply });
       } catch (err) {
         console.error(`\nError: ${err.message}`);
-        messages.pop(); // remove unanswered user message to keep history clean
+        messages.pop();
       }
-
       console.log();
     }
   });

@@ -2,56 +2,58 @@ import { readFile as fsReadFile, writeFile, unlink, access } from 'fs/promises';
 import { scanDir, readFile as readSourceFile } from './fs-utils.js';
 import { chunkFile } from './chunker.js';
 import { embed } from './embedder.js';
+import ora from 'ora';
 
 const INDEX_FILE = '.ai-index.json';
 
-/**
- * Scans a directory, chunks all files, embeds each chunk,
- * and saves the index to .ai-index.json.
- *
- * @param {string} dir
- * @returns {Promise<object[]>}
- */
 export async function buildIndex(dir) {
   // Remove stale index so we always start fresh
   try {
     await unlink(INDEX_FILE);
-    console.log(`Removed existing ${INDEX_FILE}`);
+    console.log(`  ↺  Removed existing ${INDEX_FILE}`);
   } catch {
     // No existing index — that's fine
   }
 
-  console.log(`Scanning ${dir} ...`);
+  const scanSpinner = ora(`Scanning ${dir}…`).start();
   const files = await scanDir(dir);
-  console.log(`Found ${files.length} files. Embedding chunks (this may take a few minutes)...\n`);
+  scanSpinner.succeed(`Found ${files.length} file(s) to index`);
+
+  if (files.length === 0) {
+    console.log('Nothing to index.');
+    return [];
+  }
 
   const index = [];
   let processed = 0;
   let skipped = 0;
+  let totalChunks = 0;
 
   for (const filePath of files) {
+    const fileSpinner = ora({ text: `Chunking  ${filePath}`, prefixText: '' }).start();
     try {
       const content = await readSourceFile(filePath);
       const chunks = chunkFile(filePath, content);
+      fileSpinner.text = `Embedding ${filePath}  (${chunks.length} chunk${chunks.length !== 1 ? 's' : ''})`;
 
       for (const c of chunks) {
         const embedding = await embed(c.chunk);
         index.push({ file: c.file, chunk: c.chunk, startLine: c.startLine, endLine: c.endLine, embedding });
-        process.stdout.write('.');
+        totalChunks++;
       }
 
+      fileSpinner.succeed(`${filePath}  — ${chunks.length} chunk${chunks.length !== 1 ? 's' : ''} embedded`);
       processed++;
     } catch (err) {
-      process.stderr.write(`\nSkipping ${filePath}: ${err.message}\n`);
+      fileSpinner.fail(`${filePath}  — skipped: ${err.message}`);
       skipped++;
     }
   }
 
-  console.log(`\n\nIndexed ${processed}/${files.length} files → ${index.length} chunks`);
-  if (skipped > 0) console.warn(`Skipped ${skipped} files due to errors.`);
-
+  const saveSpinner = ora('Saving index…').start();
   await saveIndex(index);
-  console.log(`Saved index → ${INDEX_FILE}`);
+  saveSpinner.succeed(`Index saved → ${INDEX_FILE}  (${processed} files, ${totalChunks} chunks${skipped ? `, ${skipped} skipped` : ''})`);
+
   return index;
 }
 
