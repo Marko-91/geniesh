@@ -86,6 +86,10 @@ Starts an interactive multi-turn chat session. If a `.ai-index.json` exists, eac
 ```bash
 ai chat
 ```
+TODO: for now we need to manually put the model like so
+```bash
+MODEL=qwen3-coder ai chat
+```
 
 ```
 You: how does the login flow work?
