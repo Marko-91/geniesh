@@ -11,10 +11,12 @@ import { runQuery, runChat, setModel } from './runner.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { buildChatContext, applySlideWindow, extractSymbols } from './context-builder.js';
 import { scanDir } from './fs-utils.js';
+import { execSync } from 'child_process';
 import ora from 'ora';
 
 const program = new Command();
 const icons = ['⏳', '🤔', '🧠', '🔮'];
+await checkOllamaHealth();
 
 program
   .name('ai')
@@ -262,3 +264,15 @@ Be concise and practical.`;
   });
 
 program.parseAsync(process.argv);
+
+async function checkOllamaHealth() {
+  try {
+    // Try to run a simple Ollama command to check if it's up
+    execSync('ollama list', { stdio: 'ignore' });
+    console.log('Checking Ollama server health…');
+    console.log('✅ Ollama server running!');
+  } catch (error) {
+    console.error('❌ Ollama server is not running. Please start Ollama with `ollama serve`. Check README.md for more instructions.');
+    process.exit(1);
+  }
+}
