@@ -1,5 +1,6 @@
-import { StreamingMarkdownParser } from './md-parser.js';
+import { formatMarkdown } from './md-parser.js';
 import ora from 'ora';
+import { spinners } from './spinners-ora.js';
 
 const OLLAMA_URL = process.env.OLLAMA_HOST || 'http://localhost:11434';
 let _model = process.env.MODEL || 'qwen3-coder';
@@ -22,7 +23,7 @@ export async function runQuery(prompt) {
     res = await fetch(`${OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: _model, prompt, stream: true }),
+      body: JSON.stringify({ model: _model, prompt, stream: true, think: false }),
     });
   } catch (err) {
     spinner.fail('Ollama unreachable');
@@ -55,7 +56,7 @@ export async function runChat(messages) {
     res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: _model, messages, stream: true }),
+      body: JSON.stringify({ model: _model, messages, stream: true, think: false }),
     });
   } catch (err) {
     spinner.fail('Ollama unreachable');
@@ -84,62 +85,46 @@ export async function runChat(messages) {
  * @returns {Promise<string>}
  */
 async function streamResponse(res, tokenExtractor) {
+  const randomSpinner = spinners[Math.floor(Math.random() * spinners.length)];
+  const spinner = ora({
+    text: 'Generating…',
+    spinner: randomSpinner,
+    color: 'blue',
+  }).start();
+
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
   let full = '';
-  const mdParser = new StreamingMarkdownParser();
-  const write = (out) => process.stdout.write(out);
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split('\n');
-    buffer = lines.pop(); // retain incomplete trailing line
-
-    for (const line of lines) {
-      if (!line.trim()) continue;
-      try {
-        const obj = JSON.parse(line);
-        const token = tokenExtractor(obj);
-        if (token) {
-          full += token;
-          mdParser.feed(token, write);
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // retain incomplete trailing line
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        try {
+          const obj = JSON.parse(line);
+          const token = tokenExtractor(obj);
+          if (token) full += token;
+        } catch {
+          // skip malformed line
         }
-      } catch {
-        // skip malformed line
       }
     }
+  } finally {
+    spinner.stop();
   }
 
-  mdParser.flush(write);
+  // Typewriter: print formatted output character-by-character
+  const formatted = formatMarkdown(full);
+  for (const ch of formatted) {
+    process.stdout.write(ch);
+    await new Promise(r => setTimeout(r, 6));
+  }
   process.stdout.write('\n');
   return full;
 }
-//   // Handle bold text
-//   text = text.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[0m');
-  
-//   // Handle headers first (they need to be processed before inline code)
-//   text = text.replace(/^# (.*)/gm, '\x1b[1m\x1b[37m$1\x1b[0m');
-//   text = text.replace(/^## (.*)/gm, '\x1b[1m\x1b[36m$1\x1b[0m');
-//   text = text.replace(/^### (.*)/gm, '\x1b[1m\x1b[35m$1\x1b[0m');
-//   text = text.replace(/^#### (.*)/gm, '\x1b[1m\x1b[34m$1\x1b[0m');
-//   text = text.replace(/^##### (.*)/gm, '\x1b[1m\x1b[33m$1\x1b[0m');
-//   text = text.replace(/^###### (.*)/gm, '\x1b[1m\x1b[32m$1\x1b[0m');
-
-//   // Handle inline code
-//   text = text.replace(/`(.*?)`/g, '\x1b[32m$1\x1b[0m');
-
-//   // Handle code blocks
-//   text = text.replace(/`(\w+)?\n([\s\S]*?)`/g, (match, lang, code) => {
-//     const langStr = lang ? ` [${lang}]` : '';
-//     const formattedCode = code
-//       .replace(/\x1b\[[0-9;]*m/g, '')
-//       .replace(/^(.*)$/gm, '  $1');
-//     return `\x1b[44m\x1b[37m${langStr}\x1b[0m\n${formattedCode}\x1b[0m`;
-//   });
-
-//   return text;
-// }

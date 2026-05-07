@@ -22,9 +22,21 @@ const SYMBOL_RE = /\b([a-z][a-zA-Z0-9]{2,}|[A-Z][a-zA-Z0-9]{2,}|[a-z][a-z0-9_]{2
 export function extractSymbols(text) {
   const raw = [...text.matchAll(SYMBOL_RE)].map(m => m[1]);
   // deduplicate, skip common English words that look like symbols
-  const SKIP = new Set(['the','and','for','with','that','this','from','into',
-    'about','have','does','what','when','where','which','how','can','should',
-    'would','could','will','then','than','also','not','but','are','was','has']);
+  const SKIP = new Set([
+    // Common short English verbs (3–4 chars, match the regex)
+    'get','set','run','let','put','try','add','use','see','say','ask','get',
+    'make','give','take','show','tell','look','find','keep','call','need',
+    'know','want','move','open','read','send','stop','push','sort','load',
+
+    // Common nouns that aren't symbols
+    'name','path','list','item','node','line','text','word','char','error',
+    'result','request','response','message','content','params','query','body',
+    'header','config','option','options','output','input','context','current',
+
+    // Common adjectives
+    'new','old','true','false','null','none','empty','next','last','first',
+    'done','valid','large','small','local','remote','async','sync','default',
+  ]);
   return [...new Set(raw)].filter(s => !SKIP.has(s.toLowerCase())).slice(0, 6);
 }
 
@@ -76,26 +88,9 @@ export async function buildChatContext(question, index, allFiles) {
     return true;
   }
 
-  // ── Tiers 1 & 2: MD-prioritised RAG chunks ─────────────────────────────────
-  const scored = await search(question, index, RAG_TOP_K);
-  const sorted = sortedIndex(index);
-
-  // Walk priority-sorted index, emit chunks that also appear in top-K scored
-  const scoredKeys = new Set(scored.map(c => `${c.file}:${c.startLine}`));
-
-  for (const entry of sorted) {
-    const key = `${entry.file}:${entry.startLine}`;
-    if (scoredKeys.has(key)) {
-      tryAdd(entry.file, entry.startLine, entry.endLine, entry.chunk);
-    }
-  }
-
-  // Fill remaining budget with any unseen top-K chunks
-  for (const c of scored) {
-    tryAdd(c.file, c.startLine, c.endLine, c.chunk);
-  }
-
-  // ── Tier 3: grep hits for extracted symbols ─────────────────────────────────
+  // ── Tier 1: grep hits for extracted symbols (highest priority when present) ─
+  // Targeted symbol hits are more valuable than cosine-similar chunks, so they
+  // go in first before the budget can be consumed by generic RAG results.
   const symbols = extractSymbols(question);
   if (symbols.length > 0 && allFiles.length > 0) {
     for (const sym of symbols) {
@@ -114,6 +109,26 @@ export async function buildChatContext(question, index, allFiles) {
         if (used >= budget) break;
       }
     }
+  }
+
+  // ── Tier 2: MD-prioritised RAG chunks (fill remaining budget) ──────────────
+  const scored = await search(question, index, RAG_TOP_K);
+  const sorted = sortedIndex(index);
+
+  // Walk priority-sorted index (MD first), emit chunks that appear in top-K
+  const scoredKeys = new Set(scored.map(c => `${c.file}:${c.startLine}`));
+  for (const entry of sorted) {
+    if (used >= budget) break;
+    const key = `${entry.file}:${entry.startLine}`;
+    if (scoredKeys.has(key)) {
+      tryAdd(entry.file, entry.startLine, entry.endLine, entry.chunk);
+    }
+  }
+
+  // Fill any remaining budget with unseen top-K chunks
+  for (const c of scored) {
+    if (used >= budget) break;
+    tryAdd(c.file, c.startLine, c.endLine, c.chunk);
   }
 
   return sections.join('\n---\n\n');
