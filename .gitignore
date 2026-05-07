@@ -32,3 +32,5 @@
 
 # Jest test results
 /.jest-test-results.json
+
+credentials/*

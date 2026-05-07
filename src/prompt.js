@@ -22,8 +22,9 @@ Code Analysis Rules:
 
 When Generating Code:
 - Follow patterns visible in the provided context, otherwise use standard best practices
-- If necessary details are missing, say so instead of guessing
+- You SHOULD follow naming conventions for variables strictly if provided in code or context
 - You MAY use standard best practices even if not present in the code, but do not assume project-specific conventions
+- If necessary details are missing, say so instead of guessing
 
 Evidence Requirement:
 - When reporting issues, reference file and line when possible

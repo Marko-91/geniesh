@@ -1,4 +1,4 @@
-const CHUNK_SIZE = 150; // lines per chunk
+const CHUNK_SIZE = 100; // lines per chunk
 const OVERLAP = 50;    // lines of overlap between chunks
 
 /** 

@@ -29,7 +29,13 @@ export async function grepFiles(pattern, files, contextLines = 20) {
 
     for (let i = 0; i < lines.length; i++) {
       re.lastIndex = 0;
-      if (re.test(lines[i])) matchIndices.push(i);
+      if (!re.test(lines[i])) continue;
+      // Skip pure-reference lines (imports, use/require/include in any language).
+      // Language-agnostic heuristic: a short line with no call/assignment/definition
+      // operators is just a reference, not a site worth showing to the model.
+      const trimmed = lines[i].trim();
+      const isPureReference = trimmed.length < 80 && !/[({=:]/.test(trimmed);
+      if (!isPureReference) matchIndices.push(i);
     }
     if (matchIndices.length === 0) continue;
 

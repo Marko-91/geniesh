@@ -129,18 +129,22 @@ program
 
       let contextText = '';
       try {
-        contextText = await buildChatContext(trimmed, index, allFiles);
+        const { contextString, log } = await buildChatContext(trimmed, index, allFiles);
+        contextText = contextString;
         ctxSpinner.succeed(
           symbols.length
-            ? `Context ready — RAG + grep hits for: ${symbols.join(', ')}`
+            ? `Context ready — transitive grep for: ${symbols.join(', ')}`
             : 'Context ready — RAG',
         );
+        if (log.length > 0) {
+          log.forEach(line => console.log(`\x1b[90m${line}\x1b[0m`));
+        }
       } catch (err) {
         ctxSpinner.warn(`Context build failed (${err.message}), falling back to plain message`);
       }
 
       const content = contextText
-        ? `Relevant codebase context:\n\n${contextText}\n\nQuestion: ${trimmed}`
+        ? `<codebase_context>\n${contextText}\n</codebase_context>\n\nQuestion: ${trimmed}`
         : trimmed;
 
       // Apply sliding window before pushing new turn
