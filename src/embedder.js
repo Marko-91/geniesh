@@ -1,17 +1,21 @@
 const OLLAMA_URL = 'http://localhost:11434';
 
+// nomic-embed-text context limit ~8192 tokens; ~4 chars/token → 6000 char safe limit
+const EMBED_CHAR_LIMIT = 6000;
+
 /**
  * Generates an embedding vector for the given text using nomic-embed-text.
  * @param {string} text
  * @returns {Promise<number[]>}
  */
 export async function embed(text) {
+  const input = text.length > EMBED_CHAR_LIMIT ? text.slice(0, EMBED_CHAR_LIMIT) : text;
   let res;
   try {
     res = await fetch(`${OLLAMA_URL}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'nomic-embed-text', input: text }),
+      body: JSON.stringify({ model: 'nomic-embed-text', input }),
     });
   } catch (err) {
     throw new Error(

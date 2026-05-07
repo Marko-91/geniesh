@@ -39,6 +39,7 @@ export async function scanDir(dir) {
       } else if (
         entry.isFile() &&
         entry.name !== '.ai-index.json' && entry.name !== 'package-lock.json' &&
+        !entry.name.endsWith('.min.js') && !entry.name.endsWith('.min.css') &&
         SUPPORTED_EXTS.has(extname(entry.name).toLowerCase())
       ) {
         files.push(fullPath);

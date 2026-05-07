@@ -15,29 +15,28 @@ const PRIORITY_NAMES = new Set([
 ]);
 
 // ─── Symbol extraction ──────────────────────────────────────────────────────────
-// Pulls likely code symbols from a natural-language question.
-// Matches: camelCase, PascalCase, snake_case, dotted.paths
-const SYMBOL_RE = /\b([a-z][a-zA-Z0-9]{2,}|[A-Z][a-zA-Z0-9]{2,}|[a-z][a-z0-9_]{2,}(?:\.[a-z][a-z0-9_]+)+)\b/g;
+// Only matches structurally identifiable code symbols — plain English words are
+// excluded by requiring interior uppercase, underscores, or dots.
+//
+//   camelCase:   streamResponse, buildIndex, runChat
+//   PascalCase:  StreamingMarkdownParser, MyClass  (must have ≥2 humps)
+//   snake_case:  build_index, run_query
+//   dotted:      config.path, req.body.id
+//
+const SYMBOL_RE = new RegExp(
+  '\\b(' +
+  '[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*' +          // camelCase
+  '|[A-Z][a-z]+(?:[A-Z][a-z0-9]+)+' +           // PascalCase (≥2 humps)
+  '|[a-z][a-z0-9]+_[a-z][a-z0-9_]+' +           // snake_case
+  '|[a-z][a-z0-9]+(?:\\.[a-z][a-z0-9]+)+' +     // dotted.path
+  '|[A-Z]{2,}(?:_[A-Z0-9]+)+' +                 // ALL_CAPS_CONSTANT
+  ')\\b',
+  'g',
+);
 
 export function extractSymbols(text) {
   const raw = [...text.matchAll(SYMBOL_RE)].map(m => m[1]);
-  // deduplicate, skip common English words that look like symbols
-  const SKIP = new Set([
-    // Common short English verbs (3–4 chars, match the regex)
-    'get','set','run','let','put','try','add','use','see','say','ask','get',
-    'make','give','take','show','tell','look','find','keep','call','need',
-    'know','want','move','open','read','send','stop','push','sort','load',
-
-    // Common nouns that aren't symbols
-    'name','path','list','item','node','line','text','word','char','error',
-    'result','request','response','message','content','params','query','body',
-    'header','config','option','options','output','input','context','current',
-
-    // Common adjectives
-    'new','old','true','false','null','none','empty','next','last','first',
-    'done','valid','large','small','local','remote','async','sync','default',
-  ]);
-  return [...new Set(raw)].filter(s => !SKIP.has(s.toLowerCase())).slice(0, 6);
+  return [...new Set(raw)].slice(0, 6);
 }
 
 // ─── Index sorting ──────────────────────────────────────────────────────────────
