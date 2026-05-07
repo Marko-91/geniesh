@@ -1,7 +1,7 @@
-const CHUNK_SIZE = 300; // lines per chunk
+const CHUNK_SIZE = 150; // lines per chunk
 const OVERLAP = 50;    // lines of overlap between chunks
 
-/**
+/** 
  * Splits a file's content into overlapping line-based chunks.
  * @param {string} filePath
  * @param {string} content

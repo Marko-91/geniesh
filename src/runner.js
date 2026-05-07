@@ -1,3 +1,4 @@
+import { StreamingMarkdownParser } from './md-parser.js';
 const OLLAMA_URL = 'http://localhost:11434';
 const MODEL = process.env.MODEL || 'qwen3:coder';
 
@@ -57,7 +58,6 @@ export async function runChat(messages) {
   }
 
   const fullResponse = await streamResponse(res, (obj) => obj.message?.content ?? '');
-  process.stdout.write(formatMarkdown(fullResponse));
   return fullResponse;
 }
 
@@ -74,6 +74,8 @@ async function streamResponse(res, tokenExtractor) {
   const decoder = new TextDecoder();
   let buffer = '';
   let full = '';
+  const mdParser = new StreamingMarkdownParser();
+  const write = (out) => process.stdout.write(out);
 
   while (true) {
     const { done, value } = await reader.read();
@@ -90,45 +92,40 @@ async function streamResponse(res, tokenExtractor) {
         const token = tokenExtractor(obj);
         if (token) {
           full += token;
+          mdParser.feed(token, write);
         }
-      } catch (err) {
+      } catch {
         // skip malformed line
       }
     }
   }
 
+  mdParser.flush(write);
   process.stdout.write('\n');
   return full;
 }
-
-/**
- * Simple markdown formatter for console output
- * @param {string} text 
- * @returns {string}
- */
-function formatMarkdown(text) {
-  // Handle bold text
-  text = text.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[0m');
+//   // Handle bold text
+//   text = text.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[0m');
   
-  // Handle headers first (they need to be processed before inline code)
-  text = text.replace(/^# (.*)/gm, '\x1b[1m\x1b[37m$1\x1b[0m');
-  text = text.replace(/^## (.*)/gm, '\x1b[1m\x1b[36m$1\x1b[0m');
-  text = text.replace(/^### (.*)/gm, '\x1b[1m\x1b[35m$1\x1b[0m');
-  text = text.replace(/^#### (.*)/gm, '\x1b[1m\x1b[34m$1\x1b[0m');
-  text = text.replace(/^##### (.*)/gm, '\x1b[1m\x1b[33m$1\x1b[0m');
-  text = text.replace(/^###### (.*)/gm, '\x1b[1m\x1b[32m$1\x1b[0m');
+//   // Handle headers first (they need to be processed before inline code)
+//   text = text.replace(/^# (.*)/gm, '\x1b[1m\x1b[37m$1\x1b[0m');
+//   text = text.replace(/^## (.*)/gm, '\x1b[1m\x1b[36m$1\x1b[0m');
+//   text = text.replace(/^### (.*)/gm, '\x1b[1m\x1b[35m$1\x1b[0m');
+//   text = text.replace(/^#### (.*)/gm, '\x1b[1m\x1b[34m$1\x1b[0m');
+//   text = text.replace(/^##### (.*)/gm, '\x1b[1m\x1b[33m$1\x1b[0m');
+//   text = text.replace(/^###### (.*)/gm, '\x1b[1m\x1b[32m$1\x1b[0m');
 
-  // Handle inline code
-  text = text.replace(/`(.*?)`/g, '\x1b[32m$1\x1b[0m');
+//   // Handle inline code
+//   text = text.replace(/`(.*?)`/g, '\x1b[32m$1\x1b[0m');
 
-  // Handle code blocks
-  text = text.replace(/`(\w+)?\n([\s\S]*?)`/g, (match, lang, code) => {
-    const langStr = lang ? ` [${lang}]` : '';
-    const formattedCode = code
-      .replace(/\x1b\[[0-9;]*m/g, '')
-      .replace(/^(.*)$/gm, '  $1');
-    return `\x1b[44m\x1b[37m${langStr}\x1b[0m\n${formattedCode}\x1b[0m`;
-  });
+//   // Handle code blocks
+//   text = text.replace(/`(\w+)?\n([\s\S]*?)`/g, (match, lang, code) => {
+//     const langStr = lang ? ` [${lang}]` : '';
+//     const formattedCode = code
+//       .replace(/\x1b\[[0-9;]*m/g, '')
+//       .replace(/^(.*)$/gm, '  $1');
+//     return `\x1b[44m\x1b[37m${langStr}\x1b[0m\n${formattedCode}\x1b[0m`;
+//   });
 
-  return text;
-}
+//   return text;
+// }

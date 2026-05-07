@@ -1,11 +1,12 @@
 # ai-dev-llama-cli
 
-A local AI developer assistant powered by **Llama 3** and a **RAG (Retrieval-Augmented Generation)** pipeline. Runs entirely on your machine — no API keys, no data leaving your system.
+A local AI developer assistant powered by **qwen3:coder** and a **RAG (Retrieval-Augmented Generation)** pipeline. Runs entirely on your machine — no API keys, no data leaving your system.
 
 ## Requirements
 
 - Node.js 18+
 - [Ollama](https://ollama.com) running locally
+- `ollama serve` -> to run locally
 
 ## Installation
 
@@ -16,6 +17,7 @@ npm install
 # 2. Pull required Ollama models
 ollama pull llama3
 ollama pull nomic-embed-text
+ollama pull qwen3:coder
 
 # 3. Link globally so `ai` works anywhere (run from the project directory)
 cd /path/to/ai-dev-llama-cli && npm link
@@ -99,6 +101,39 @@ Type `exit` or press `Ctrl+C` to quit.
 
 ---
 
+### `ai refs <name> --dir <path>`
+
+Finds all usages of a symbol (function calls, definitions, imports) across a directory using word-boundary matching. **No index required** — runs in milliseconds directly on the source files.
+
+```bash
+ai refs login --dir src/
+ai refs validateToken --dir .
+```
+
+Optionally ask the LLM a question about all the found usages:
+
+```bash
+ai refs login --dir src/ --ask "are there any security issues with how login is called?"
+ai refs db.query --dir src/ --ask "could any of these queries be vulnerable to injection?"
+```
+
+Or use `--explain` for a one-shot summary of what the symbol does and how it is used across the codebase:
+
+```bash
+ai refs login --dir src/ --explain
+ai refs fetchUser --dir src/ --explain
+```
+
+Control how many lines of surrounding context are captured per match (default 20):
+
+```bash
+ai refs fetchUser --dir src/ --context 10
+```
+
+Use this instead of `--dir` RAG when you want to find **where** something is called, defined, or imported — structural questions RAG is not suited for.
+
+---
+
 ## How It Works
 
 ```
@@ -127,6 +162,7 @@ src/
 ├── indexer.js      Build, load, and save the RAG index
 ├── search.js       Cosine similarity search
 ├── extractor.js    Named function extraction
+├── grep.js         Symbol search and context extraction
 ├── prompt.js       Prompt templates with context injection
 └── runner.js       Streaming Ollama LLM calls
 ```

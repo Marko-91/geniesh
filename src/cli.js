@@ -4,12 +4,14 @@ import { Command } from 'commander';
 import { createInterface } from 'readline';
 import { readFile } from './fs-utils.js';
 import { extractFunction } from './extractor.js';
-import { buildIndex, loadIndex, indexExists } from './indexer.js';
+import { buildIndex, loadIndex, indexExists, buildIndexFromFile } from './indexer.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt } from './prompt.js';
 import { runQuery, runChat } from './runner.js';
+import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 
 const program = new Command();
+const icons = ['⏳', '🤔', '🧠', '🔮'];
 
 program
   .name('ai')
@@ -21,11 +23,20 @@ program
 
 program
   .command('index')
-  .description('Build a RAG index for a directory and save to .ai-index.json')
-  .requiredOption('--dir <path>', 'Directory to scan and index')
+  .description('Build a RAG index for a directory or single file')
+  .option('--dir <path>', 'Directory to scan and index')
+  .option('--file <path>', 'Single file to index')
   .action(async (opts) => {
     try {
-      await buildIndex(opts.dir);
+      if (opts.file) {
+        // Index single file
+        await buildIndexFromFile(opts.file);
+      } else if (opts.dir) {
+        // Index directory
+        await buildIndex(opts.dir);
+      } else {
+        throw new Error('Either --dir or --file must be specified');
+      }
     } catch (err) {
       console.error(`\nError: ${err.message}`);
       process.exit(1);
@@ -98,7 +109,7 @@ program
       }
 
       messages.push({ role: 'user', content });
-      process.stdout.write('\nAssistant: ');
+      process.stdout.write('\nAssistant: ⏳ ');
 
       try {
         const reply = await runChat(messages);
@@ -158,6 +169,57 @@ program
       }
 
       await runQuery(prompt);
+    } catch (err) {
+      console.error(`\nError: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+// ─── ai refs <name> --dir <path> ────────────────────────────────────────────
+
+program
+  .command('refs')
+  .description('Find all usages of a symbol across a directory (no index needed)')
+  .argument('<name>', 'Function, variable, or symbol name to search for')
+  .requiredOption('--dir <path>', 'Directory to search')
+  .option('--ask <question>', 'Ask the LLM a question about the found usages')
+  .option('--explain', 'Ask the LLM to explain the symbol and its usage patterns')
+  .option('--context <lines>', 'Lines of context around each match', (v) => parseInt(v, 10), 20)
+  .action(async (name, opts) => {
+    try {
+      process.stdout.write(`Searching for "${name}" in ${opts.dir}...\n`);
+      const results = await grepDir(name, opts.dir, opts.context);
+
+      console.log(formatGrepResults(results, name));
+
+      const question = opts.ask
+        || (opts.explain
+          ? `Explain what "${name}" does, how it is used across the codebase, and what the calling patterns suggest about its responsibilities and design.`
+          : null);
+
+      if (question) {
+        if (results.length === 0) {
+          console.error('No matches to analyse.');
+          process.exit(1);
+        }
+        const context = buildGrepContext(results);
+        const prompt = `You are a senior software engineer.
+
+Context (all usages of "${name}" found in the codebase):
+${context}
+
+Task:
+${question}
+
+Return:
+- bugs
+- improvements
+- security issues
+- explanation (if relevant)
+
+Be concise and practical.`;
+        await runQuery(prompt);
+      }
     } catch (err) {
       console.error(`\nError: ${err.message}`);
       process.exit(1);

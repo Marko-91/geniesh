@@ -4,16 +4,16 @@ import { join, extname } from 'path';
 
 const IGNORED_DIRS = new Set([
   'node_modules', 'dist', '.git', '.next', 'build', 'out',
-  'coverage', '__pycache__', 'venv', '.venv', 'vendor', '.cache',
+  'coverage', '__pycache__', 'venv', '.venv', 'vendor', '.cache', '__tests__', 'test', 'tests'
 ]);
 
 const SUPPORTED_EXTS = new Set([
   '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',
   '.py', '.go', '.rs', '.java', '.cpp', '.c', '.h',
-  '.rb', '.md', '.sh', '.sql', '.yaml', '.yml', '.json',
+  '.rb', '.md', '.sh', '.sql', '.yaml', '.yml', '.json', '.php'
 ]);
 
-const INGORED_EXTS = new Set([
+const IGNORED_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg',
   '.zip', '.tar', '.gz', '.7z', '.pdf', '.docx', '.xlsx',
   '.mp4', '.mp3', '.avi', '.mov', 'package-lock.json', 'yarn.lock',
