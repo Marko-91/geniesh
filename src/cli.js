@@ -4,7 +4,7 @@ import { Command } from 'commander';
 import { createInterface } from 'readline';
 import { readFile } from './fs-utils.js';
 import { extractFunction } from './extractor.js';
-import { buildIndex, loadIndex, indexExists, buildIndexFromFile } from './indexer.js';
+import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './indexer.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt } from './prompt.js';
 import { runQuery, runChat, setModel } from './runner.js';
@@ -40,7 +40,7 @@ program
     try {
       if (opts.file) {
         // Index single file
-        await buildIndexFromFile(opts.file);
+        await buildIndexFromFileList(opts.file);
       } else if (opts.dir) {
         // Index directory
         await buildIndex(opts.dir);
@@ -59,22 +59,38 @@ program
   .command('chat')
   .description('Start an intelligent chat session with auto-indexing and priority RAG')
   .option('--dir <path>', 'Directory to use for indexing/search (default: cwd)')
+  .option('--files <paths...>', 'Explicit files to use as context (skips auto-index)')
+  .option('--dirs <paths...>', 'Explicit directories to scan as context (skips auto-index)')
   .action(async (opts) => {
     const dir = opts.dir || process.cwd();
 
     // ─ 1. Build or load index ─────────────────────────────────────────────────
     let index;
-    if (await indexExists()) {
+    let allFiles;
+    const hasExplicit = (opts.files && opts.files.length > 0) || (opts.dirs && opts.dirs.length > 0);
+
+    if (hasExplicit) {
+      // Explicit mode: build an in-memory index from the given files/dirs only
+      let explicitFiles = [...(opts.files || [])];
+      for (const d of (opts.dirs || [])) {
+        const scanned = await scanDir(d);
+        explicitFiles = explicitFiles.concat(scanned);
+      }
+      // deduplicate
+      explicitFiles = [...new Set(explicitFiles)];
+      console.log(`\n📎  Explicit context: ${explicitFiles.length} file(s)\n`);
+      index = await buildIndexFromFileList(explicitFiles);
+      allFiles = explicitFiles;
+    } else if (await indexExists()) {
       const loadSpinner = ora('Loading index…').start();
       index = await loadIndex();
       loadSpinner.succeed(`Index loaded — ${index.length} chunks from ${new Set(index.map(e => e.file)).size} files`);
+      allFiles = await scanDir(dir);
     } else {
       console.log(`\n⚠️  No index found. Building index for ${dir}…\n`);
       index = await buildIndex(dir);
+      allFiles = await scanDir(dir);
     }
-
-    // ─ 2. Scan file list for grep ─────────────────────────────────────────────
-    const allFiles = await scanDir(dir);
 
     // ─ 3. System prompt ───────────────────────────────────────────────────────
     const messages = [
@@ -92,7 +108,11 @@ program
 
     console.log('\n────────────────────────────────────────────────────────────');
     console.log('🧠  AI Chat  —  type \x1b[33mexit\x1b[0m or Ctrl+C to quit');
-    console.log(`📂  Directory : ${dir}`);
+    if (hasExplicit) {
+      console.log(`📎  Context   : ${allFiles.length} explicit file(s)`);
+    } else {
+      console.log(`📂  Directory : ${dir}`);
+    }
     console.log(`🧩  Model     : ${program.opts().model || 'qwen3-coder'}`);
     console.log(`📚  Index     : ${index.length} chunks`);
     console.log('────────────────────────────────────────────────────────────\n');
