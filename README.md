@@ -224,6 +224,26 @@ src/
 └── runner.js           Streaming Ollama LLM calls
 ```
 
+## The Alchemy Behind This
+
+> *How a human wrestled a chorus of AI ghosts into writing a tool that writes code.*
+
+This project wasn't designed. It was **evolved** — through a chaotic, recursive loop of:
+
+- **AI hallucination roulette** — Copilot, Claude, Llama, and geniesh itself all took the wheel at different points. Each one confidently generated wrong code in its own unique way. The secret? Let them all hallucinate, then pick the pieces that don't burst into flames.
+
+- **Self-improvement agents feeding on themselves** — geniesh was used to debug its own source code. The tool wrote parts of itself, then we asked it to find bugs in what it wrote. It found them. We fixed them. It wrote tests. We ran them. The snake ate its tail and grew scales.
+
+- **Test, test, test** — 106 tests and counting. Every change, no matter how small, runs the gauntlet. If the tests pass, the change survives. If they don't, it gets fed back to the model with the error message. Repeat until green.
+
+- **Manual error archaeology** — For every clean commit you see, there were 10 dirty ones that got squashed. The workflow: generate → break → read the stack trace → curse → fix → repeat. Six years of professional debugging instinct plus an embarrassing amount of classical philosophy (Stoic shrug at failed builds, Hegelian dialectic of thesis → AI hallucination → synthesis).
+
+The result is a tool that works, but more importantly, a process that *improves itself*. geniesh is not a finished product — it's a method for turning AI noise into signal through relentless empirical validation.
+
+If you want to contribute, don't write code. Write tests. Then make them pass.
+
+---
+
 ## Notes
 
 - `.ai-index.json` and `.ai-relations.json` are excluded from git by default.
