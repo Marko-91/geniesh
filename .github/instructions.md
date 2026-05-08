@@ -36,6 +36,7 @@ This file defines the conventions, preferences, and workflows for developing and
 - Update `README.md` after every significant change (new feature, refactor, changed behavior).
 - Keep the architecture diagram and project structure in `README.md` in sync with the actual code.
 - `.github/instructions.md` should be updated when development conventions change.
+- The **Showcase** section in `README.md` has placeholders for screenshots and demo videos. Replace them with real captures when presenting the tool.
 
 ## Context Building (internal)
 

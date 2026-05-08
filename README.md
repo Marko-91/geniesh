@@ -153,6 +153,32 @@ Use this instead of `--dir` RAG when you want to find **where** something is cal
 
 ---
 
+## Showcase
+
+> TODO: Replace placeholders below with actual screenshots/demo videos.
+
+### `ai chat` on a large open-source codebase
+
+<!-- Screenshot: ai chat session exploring a familiar OSS repo (e.g. React, Express, Lodash). Show the BFS trace + coherent answer about a non-trivial function. -->
+![ai chat demo](https://via.placeholder.com/800x400/1a1a2e/e0e0e0?text=TODO:+Screenshot+of+ai+chat+in+action)
+
+### `ai refs` — find all usages of a symbol
+
+<!-- Screenshot: ai refs showing every call site of a symbol across a large project, with --explain output. -->
+![ai refs demo](https://via.placeholder.com/800x300/1a1a2e/e0e0e0?text=TODO:+Screenshot+of+ai+refs+output)
+
+### `ai index` — indexing a real-world project
+
+<!-- Screenshot: terminal output of ai index running on a large repo, showing symbol count, file count, and timing. -->
+![ai index demo](https://via.placeholder.com/800x200/1a1a2e/e0e0e0?text=TODO:+Screenshot+of+ai+index+output)
+
+### Video walkthrough
+
+<!-- Video: screen recording of a full workflow — clone a project, run ai index, ask questions in ai chat, drill down with --file. -->
+[▶️ Watch demo on YouTube](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
+
+---
+
 ## How It Works
 
 ```
