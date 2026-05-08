@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 480" font-family="Consolas, 'Courier New', monospace" font-size="13">
+  <defs>
+    <style>
+      .bg { fill: #1a1a2e; }
+      .title-bar { fill: #16213e; }
+      .title-text { fill: #e0e0e0; font-size: 12px; }
+      .prompt { fill: #00ff88; }
+      .trace-dir { fill: #888; }
+      .trace-line { fill: #ffcc00; }
+      .output { fill: #e0e0e0; }
+      .match-line { fill: #ffcc00; }
+      .arrow { fill: #00ff88; }
+      .dim { fill: #555; }
+    </style>
+  </defs>
+  <rect class="bg" width="800" height="480" rx="6"/>
+  <rect class="title-bar" x="0" y="0" width="800" height="28" rx="6"/>
+  <circle cx="16" cy="14" r="5" fill="#ff5f57"/>
+  <circle cx="32" cy="14" r="5" fill="#ffbd2e"/>
+  <circle cx="48" cy="14" r="5" fill="#28c840"/>
+  <text x="400" y="18" text-anchor="middle" class="title-text">geniesh — ai refs on express</text>
+
+  <text x="14" y="52" class="prompt">❯</text>
+  <text x="30" y="52" class="output">ai refs application.handle --dir D:\project\express --explain</text>
+
+  <text x="14" y="80" class="output">Found</text>
+  <text x="60" y="80" class="match-line">12</text>
+  <text x="80" y="80" class="output">occurrence(s) of</text>
+  <text x="190" y="80" class="match-line">"application.handle"</text>
+  <text x="330" y="80" class="output">in</text>
+  <text x="350" y="80" class="match-line">3</text>
+  <text x="360" y="80" class="output">file(s)</text>
+
+  <text x="14" y="108" class="trace-dir">lib/application.js  lines 17–40</text>
+  <text x="22" y="126" class="arrow">→</text>
+  <text x="38" y="126" class="dim">17</text>
+  <text x="52" y="126" class="output">var app = exports = module.exports = createApplication;</text>
+  <text x="22" y="144" class="arrow">→</text>
+  <text x="38" y="144" class="dim">30</text>
+  <text x="52" y="144" class="output">app.handle = function handle(req, res, callback) {</text>
+
+  <text x="14" y="172" class="trace-dir">lib/application.js  lines 152–178</text>
+  <text x="22" y="190" class="arrow">→</text>
+  <text x="38" y="190" class="dim">152</text>
+  <text x="52" y="190" class="output">app.use = function use(fn) {</text>
+  <text x="22" y="208" class="arrow">→</text>
+  <text x="38" y="208" class="dim">165</text>
+  <text x="52" y="208" class="output">this.router.use(path, fn);</text>
+
+  <text x="14" y="236" class="trace-dir">lib/application.js  lines 232–236</text>
+  <text x="22" y="254" class="arrow">→</text>
+  <text x="38" y="254" class="dim">232</text>
+  <text x="52" y="254" class="output">app.listen = function listen() {</text>
+
+  <text x="14" y="282" class="trace-dir">test/res.send.js  lines 57–68</text>
+  <text x="22" y="300" class="arrow">→</text>
+  <text x="38" y="300" class="dim">57</text>
+  <text x="52" y="300" class="output">app.handle(function (req, res) {</text>
+
+  <text x="14" y="334" class="prompt">✦ EXPLAIN:</text>
+  <text x="14" y="358" class="output">application.handle is the core request dispatcher.</text>
+  <text x="14" y="378" class="output">It sets up req/res, applies X-Powered-By, then delegates</text>
+  <text x="14" y="398" class="output">to this.router.handle() for middleware/route dispatch.</text>
+  <text x="14" y="418" class="output">Used in app.listen() and directly in tests.</text>
+
+  <text x="14" y="452" class="dim">💡 Use --context N to control lines per match (default 20)</text>
+</svg>

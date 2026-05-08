@@ -1,0 +1,91 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 620" font-family="Consolas, 'Courier New', monospace" font-size="13">
+  <defs>
+    <style>
+      .bg { fill: #1a1a2e; }
+      .title-bar { fill: #16213e; }
+      .title-text { fill: #e0e0e0; font-size: 12px; }
+      .prompt { fill: #00ff88; }
+      .trace-dir { fill: #888; }
+      .trace-line { fill: #ffcc00; }
+      .trace-method { fill: #ff66cc; }
+      .trace-hits { fill: #ff66cc; }
+      .trace-sym { fill: #888; }
+      .bfs-log { fill: #666; }
+      .rag-score { fill: #888; }
+      .output { fill: #e0e0e0; }
+      .key { fill: #00ff88; }
+      .bullet { fill: #ffcc00; }
+    </style>
+  </defs>
+  <rect class="bg" width="900" height="620" rx="6"/>
+  <rect class="title-bar" x="0" y="0" width="900" height="28" rx="6"/>
+  <circle cx="16" cy="14" r="5" fill="#ff5f57"/>
+  <circle cx="32" cy="14" r="5" fill="#ffbd2e"/>
+  <circle cx="48" cy="14" r="5" fill="#28c840"/>
+  <text x="450" y="18" text-anchor="middle" class="title-text">geniesh — ai chat on express</text>
+
+  <!-- Prompt line -->
+  <text x="14" y="52" class="prompt">❯</text>
+  <text x="30" y="52" class="output">ai chat --dir D:\project\express</text>
+
+  <!-- System messages -->
+  <text x="14" y="74" class="trace-dir">✓ Index loaded — 502 chunks from 152 files</text>
+  <text x="14" y="96" class="trace-dir">────────────────────────────────────────────────────</text>
+  <text x="14" y="112" class="output">🧠 AI Chat</text>
+  <text x="14" y="128" class="trace-dir">📂 Directory : D:\project\express</text>
+  <text x="14" y="144" class="trace-dir">🧩 Model     : qwen3-coder</text>
+  <text x="14" y="160" class="trace-dir">────────────────────────────────────────────────────</text>
+
+  <!-- User query -->
+  <text x="14" y="184" class="prompt">You:</text>
+  <text x="70" y="184" class="output">how does application.handle dispatch requests?</text>
+  <text x="14" y="204" class="trace-dir">● Building context (BFS + RAG: application.handle)…</text>
+  <text x="14" y="224" class="prompt">✓ Context ready — BFS traversal for: application.handle</text>
+
+  <!-- BFS trace -->
+  <text x="14" y="248" class="trace-dir">📌 Retrieval trace:</text>
+
+  <text x="16" y="270" class="bfs-log">  [bfs 0] symbols: application.handle</text>
+
+  <text x="20" y="290" class="trace-dir">  .../express/lib/application.js:</text>
+  <text x="270" y="290" class="trace-line">17–40</text>
+  <text x="310" y="290" class="trace-method">  bfs-0 (1 hit) [application.handle]</text>
+
+  <text x="20" y="308" class="trace-dir">  .../express/lib/application.js:</text>
+  <text x="270" y="308" class="trace-line">578–592</text>
+  <text x="310" y="308" class="trace-method">  bfs-0 (1 hit) [application.handle]</text>
+
+  <text x="20" y="326" class="trace-dir">  .../express/lib/application.js:</text>
+  <text x="270" y="326" class="trace-line">152–178</text>
+  <text x="310" y="326" class="trace-method">  bfs-0 (2 hits) [application.handle]</text>
+
+  <text x="20" y="344" class="trace-dir">  .../express/lib/application.js:</text>
+  <text x="270" y="344" class="trace-line">221–223</text>
+  <text x="310" y="344" class="trace-method">  bfs-0 (1 hit) [application.handle]</text>
+
+  <text x="20" y="362" class="trace-dir">  .../express/lib/application.js:</text>
+  <text x="270" y="362" class="trace-line">232–236</text>
+  <text x="310" y="362" class="trace-method">  bfs-0 (1 hit) [application.handle]</text>
+
+  <text x="20" y="380" class="trace-dir">  .../express/test/res.send.js:</text>
+  <text x="270" y="380" class="trace-line">57–68</text>
+  <text x="310" y="380" class="trace-method">  bfs-0 (2 hits) [application.handle]</text>
+
+  <text x="14" y="404" class="bfs-log">  [bfs 0] added 8 window(s), budget used: 3386/10000</text>
+
+  <text x="14" y="428" class="bfs-log">  [bfs 0→1] discovered: Copyright, Module, View, Router, compileETag (+1424)</text>
+  <text x="14" y="452" class="bfs-log">  [bfs 1] symbols: Copyright, Module, View, Router, compileETag (+12)</text>
+
+  <text x="20" y="474" class="trace-dir">  .../express/lib/application.js:</text>
+  <text x="270" y="474" class="trace-line">1–20</text>
+  <text x="310" y="474" class="trace-method">  bfs-1 (3 hits) [Copyright]</text>
+
+  <text x="14" y="498" class="bfs-log">  [bfs 1] added 17 window(s), budget used: 9876/10000</text>
+
+  <text x="14" y="522" class="bfs-log">  [bfs 1→2] discovered: app.set, path.join, res.render (+1324)</text>
+
+  <!-- Assistant answer -->
+  <text x="14" y="552" class="prompt">Assistant:</text>
+  <text x="14" y="574" class="output">● Thinking (qwen3-coder)…</text>
+  <text x="14" y="596" class="output">● Generating…</text>
+</svg>

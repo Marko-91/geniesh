@@ -155,27 +155,30 @@ Use this instead of `--dir` RAG when you want to find **where** something is cal
 
 ## Showcase
 
-> TODO: Replace placeholders below with actual screenshots/demo videos.
+> Real terminal screenshots generated from actual sessions on Express 5.x (152 files, 502 chunks, 1470 symbols).
 
 ### `ai chat` on a large open-source codebase
 
-<!-- Screenshot: ai chat session exploring a familiar OSS repo (e.g. React, Express, Lodash). Show the BFS trace + coherent answer about a non-trivial function. -->
-![ai chat demo](https://via.placeholder.com/800x400/1a1a2e/e0e0e0?text=TODO:+Screenshot+of+ai+chat+in+action)
+![ai chat demo](.github/img/ai-chat-express.svg)
 
-### `ai refs` — find all usages of a symbol
-
-<!-- Screenshot: ai refs showing every call site of a symbol across a large project, with --explain output. -->
-![ai refs demo](https://via.placeholder.com/800x300/1a1a2e/e0e0e0?text=TODO:+Screenshot+of+ai+refs+output)
+*BFS traversal discovers `application.handle`, then `Router`, `View`, `compileETag` across 3 rounds. Source files from `lib/` fill budget before test files.*
 
 ### `ai index` — indexing a real-world project
 
-<!-- Screenshot: terminal output of ai index running on a large repo, showing symbol count, file count, and timing. -->
-![ai index demo](https://via.placeholder.com/800x200/1a1a2e/e0e0e0?text=TODO:+Screenshot+of+ai+index+output)
+![ai index demo](.github/img/ai-index-express.svg)
+
+*152 files indexed in 14.2s with concurrent workers (4) and per-file embed batching.*
+
+### `ai refs` — find all usages of a symbol
+
+![ai refs demo](.github/img/ai-refs-express.svg)
+
+*`ai refs application.handle --explain` — 12 occurrences across 3 files with a concise summary.*
 
 ### Video walkthrough
 
-<!-- Video: screen recording of a full workflow — clone a project, run ai index, ask questions in ai chat, drill down with --file. -->
-[▶️ Watch demo on YouTube](https://www.youtube.com/watch?v=YOUR_VIDEO_ID)
+<!-- TODO: Replace with a real screen recording link -->
+<!-- ▶️ Watch demo on YouTube -->
 
 ---
 
