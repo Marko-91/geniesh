@@ -1,4 +1,4 @@
-const OLLAMA_URL = 'http://localhost:11434';
+const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
 // nomic-embed-text context limit ~8192 tokens; ~4 chars/token → 6000 char safe limit
 const EMBED_CHAR_LIMIT = 6000;
@@ -29,5 +29,8 @@ export async function embed(text) {
   }
 
   const data = await res.json();
+  if (!data?.embeddings?.length) {
+    throw new Error('Ollama returned empty embedding response');
+  }
   return data.embeddings[0];
 }

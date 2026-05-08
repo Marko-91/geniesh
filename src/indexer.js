@@ -130,23 +130,4 @@ export async function buildIndexFromFileList(files) {
 
   console.log(`\nExplicit context: ${processed} file(s), ${totalChunks} chunks${skipped ? `, ${skipped} skipped` : ''}`);
   return index;
-
-  try {
-    const content = await readSourceFile(filePath);
-    const chunks = chunkFile(filePath, content);
-    
-    const index = [];
-    for (const c of chunks) {
-      const embedding = await embed(c.chunk);
-      index.push({ file: c.file, chunk: c.chunk, startLine: c.startLine, endLine: c.endLine, embedding });
-      process.stdout.write('.');
-    }
-    
-    console.log(`\nIndexed 1 file → ${index.length} chunks`);
-    await saveIndex(index);
-    console.log(`Saved index → ${INDEX_FILE}`);
-    return index;
-  } catch (err) {
-    throw new Error(`Failed to index file ${filePath}: ${err.message}`);
-  }
 }
