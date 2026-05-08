@@ -13,12 +13,14 @@
     "ora": "^9.4.0"
   },
   "scripts": {
+    "build": "esbuild src/cli.js --bundle --platform=node --target=node18 --format=esm --outfile=dist/cli.js --external:ora --external:commander",
     "test": "jest"
   },
   "devDependencies": {
     "@babel/preset-env": "^7.29.5",
     "@types/jest": "^30.0.0",
     "babel-jest": "^30.3.0",
+    "esbuild": "^0.28.0",
     "jest": "^30.3.0"
   },
   "jest": {
