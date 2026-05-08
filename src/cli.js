@@ -22,8 +22,8 @@ const icons = ['⏳', '🤔', '🧠', '🔮'];
 await checkOllamaHealth();
 
 program
-  .name('ai')
-  .description('Local AI developer assistant — Llama 3 + RAG (powered by Ollama)')
+  .name('geniesh')
+  .description('Local AI developer assistant — BFS relation-graph + RAG (powered by Ollama)')
   .version('1.0.0')
   .enablePositionalOptions()
   .option('--model <name>', 'Ollama model to use', 'qwen3-coder')
@@ -127,7 +127,7 @@ program
 
     console.log('\x1b[90m💡 Tips\x1b[0m');
     console.log('\x1b[90m   • Mention a file path to load it as full context:  "look at lib/application.js"\x1b[0m');
-    console.log('\x1b[90m   • Ask about specific symbols:                     "how does Router.handle work?"\x1b[0m');
+    console.log('\x1b[90m   • Ask about specific symbols:                      "how does Router.handle work?"\x1b[0m');
     console.log('\x1b[90m   • Use concrete function/method names for best BFS\x1b[0m');
     console.log('\x1b[90m   • Type \x1b[33mexit\x1b[90m or Ctrl+C to quit\x1b[0m\n');
 
@@ -231,7 +231,7 @@ program
         }
       } else if (opts.dir) {
         if (!(await indexExists())) {
-          console.error(`No index found. Run first:\n  ai index --dir ${opts.dir}`);
+          console.error(`No index found. Run first:\n  geniesh index --dir ${opts.dir}`);
           process.exit(1);
         }
 

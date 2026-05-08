@@ -1,9 +1,10 @@
 {
-  "name": "ai-dev-llama-cli",
+  "name": "geniesh",
   "version": "1.0.0",
   "type": "module",
   "bin": {
-    "ai": "./src/cli.js"
+    "geniesh": "./src/cli.js",
+    "gensh": "./src/cli.js"
   },
   "engines": {
     "node": ">=18.0.0"

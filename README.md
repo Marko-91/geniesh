@@ -18,11 +18,11 @@ npm install
 ollama pull nomic-embed-text
 ollama pull qwen3-coder
 
-# 3. Link globally so `ai` works anywhere (run from the project directory)
-cd /path/to/ai-dev-llama-cli && npm link
+# 3. Link globally so `geniesh` works anywhere (run from the project directory)
+cd /path/to/geniesh && npm link
 
 # Or run without linking, using node directly:
-# node src/cli.js index --dir .
+# node src/cli.js chat
 ```
 
 ## Quickstart
@@ -31,7 +31,7 @@ The fastest way to get answers about any codebase:
 
 ```bash
 # cd into any project and start chatting — auto-indexes on first use
-ai chat
+geniesh chat
 
 # Ask about specific files — geniesh loads them as full context
 #   "what does the render function in lib/application.js do?"
@@ -39,73 +39,73 @@ ai chat
 #   "how does Router.handle dispatch requests?"
 
 # Or use one-shot queries for quick analysis
-ai "are there any security issues?" --file src/auth.js
-ai refs validateToken --dir src/ --explain
+geniesh "are there any security issues?" --file src/auth.js
+geniesh refs validateToken --dir src/ --explain
 ```
 
 That's it. No config files, no API keys, no data leaving your machine.
 
 ## Commands
 
-### `ai index --dir <path>`
+### `geniesh index --dir <path>`
 
-Scans a directory, chunks all source files, generates embeddings, builds a **symbol relation graph**, and saves both `.ai-index.json` and `.ai-relations.json`. Run this once before using `ai chat`.
+Scans a directory, chunks all source files, generates embeddings, builds a **symbol relation graph**, and saves both `.ai-index.json` and `.ai-relations.json`. Run this once before using `geniesh chat`.
 
 ```bash
-ai index --dir src/
-ai index --dir .
+geniesh index --dir src/
+geniesh index --dir .
 ```
 
 Files in `node_modules`, `dist`, `.git`, `build`, `coverage`, and hidden directories are automatically ignored.
 
 ---
 
-### `ai "<query>" --file <path>`
+### `geniesh "<query>" --file <path>`
 
 Reads a file and sends it directly to the LLM.
 
 ```bash
-ai "find bugs" --file src/auth.ts
-ai "are there any security issues?" --file src/api/routes.js
+geniesh "find bugs" --file src/auth.ts
+geniesh "are there any security issues?" --file src/api/routes.js
 ```
 
 ---
 
-### `ai "<query>" --file <path> --fn <function-name>`
+### `geniesh "<query>" --file <path> --fn <function-name>`
 
 Extracts a single named function from a file and analyzes only that function.
 
 ```bash
-ai "explain this function" --fn login --file src/auth.ts
-ai "find edge cases" --fn validateToken --file src/middleware.js
+geniesh "explain this function" --fn login --file src/auth.ts
+geniesh "find edge cases" --fn validateToken --file src/middleware.js
 ```
 
 Supports function declarations, arrow functions, async functions, and class methods.
 
 ---
 
-### `ai "<query>" --dir <path>`
+### `geniesh "<query>" --dir <path>`
 
-Uses the RAG index to retrieve the most relevant code chunks for the query, then sends only those chunks to the LLM. **Requires running `ai index` first.** (Does not use the relation graph — use `ai chat` for BFS traversal.)
+Uses the RAG index to retrieve the most relevant code chunks for the query, then sends only those chunks to the LLM. **Requires running `geniesh index` first.** (Does not use the relation graph — use `geniesh chat` for BFS traversal.)
 
 ```bash
-ai "how does authentication work?" --dir src/
-ai "where are database queries made?" --dir .
-ai "find potential memory leaks" --dir src/
+geniesh "how does authentication work?" --dir src/
+geniesh "where are database queries made?" --dir .
+geniesh "find potential memory leaks" --dir src/
 ```
 
 The top 5 most semantically similar chunks (by cosine similarity) are retrieved and used as context.
 
 ---
 
-### `ai chat`
+### `geniesh chat`
 
 Starts an intelligent multi-turn chat session with auto-indexing, **BFS relation-graph traversal**, **auto-detected file references**, and RAG augmentation.
 
 ```bash
-ai chat
-ai chat --dir /path/to/project
-ai chat --model qwen3-coder
+geniesh chat
+geniesh chat --dir /path/to/project
+geniesh chat --model qwen3-coder
 ```
 
 If no `.ai-index.json` exists in the current directory, the index is built automatically before the session starts.
@@ -140,33 +140,33 @@ Type `exit` or press `Ctrl+C` to quit.
 
 ---
 
-### `ai refs <name> --dir <path>`
+### `geniesh refs <name> --dir <path>`
 
 Finds all usages of a symbol (function calls, definitions, imports) across a directory using word-boundary matching. **No index required** — runs in milliseconds directly on the source files.
 
 ```bash
-ai refs login --dir src/
-ai refs validateToken --dir .
+geniesh refs login --dir src/
+geniesh refs validateToken --dir .
 ```
 
 Optionally ask the LLM a question about all the found usages:
 
 ```bash
-ai refs login --dir src/ --ask "are there any security issues with how login is called?"
-ai refs db.query --dir src/ --ask "could any of these queries be vulnerable to injection?"
+geniesh refs login --dir src/ --ask "are there any security issues with how login is called?"
+geniesh refs db.query --dir src/ --ask "could any of these queries be vulnerable to injection?"
 ```
 
 Or use `--explain` for a one-shot summary of what the symbol does and how it is used across the codebase:
 
 ```bash
-ai refs login --dir src/ --explain
-ai refs fetchUser --dir src/ --explain
+geniesh refs login --dir src/ --explain
+geniesh refs fetchUser --dir src/ --explain
 ```
 
 Control how many lines of surrounding context are captured per match (default 20):
 
 ```bash
-ai refs fetchUser --dir src/ --context 10
+geniesh refs fetchUser --dir src/ --context 10
 ```
 
 Use this instead of `--dir` RAG when you want to find **where** something is called, defined, or imported — structural questions RAG is not suited for.
@@ -177,23 +177,23 @@ Use this instead of `--dir` RAG when you want to find **where** something is cal
 
 > Real terminal screenshots generated from actual sessions on Express 5.x (152 files, 502 chunks, 1470 symbols).
 
-### `ai chat` on a large open-source codebase
+### `geniesh chat` on a large open-source codebase
 
 *BFS traversal discovers `application.handle`, then `Router`, `View`, `compileETag` across 3 rounds. Source files from `lib/` fill budget before test files.*
 
-![ai chat demo](.github/img/output-explain.png)
+![geniesh chat demo](.github/img/geniesh-chat-express.svg)
 
-### `ai index` — indexing a real-world project
+### `geniesh index` — indexing a real-world project
 
-![ai chat demo](.github/img/index.png)
+![geniesh index demo](.github/img/geniesh-index-express.svg)
 
 *152 files indexed in 14.2s with concurrent workers (4) and per-file embed batching.*
 
-### `ai refs` — find all usages of a symbol
+### `geniesh refs` — find all usages of a symbol
 
-![ai refs demo](.github/img/ai-refs-express.svg)
+![geniesh refs demo](.github/img/geniesh-refs-express.svg)
 
-*`ai refs application.handle --explain` — 12 occurrences across 3 files with a concise summary.*
+*`geniesh refs application.handle --explain` — 12 occurrences across 3 files with a concise summary.*
 
 ### Video walkthrough
 
@@ -270,7 +270,7 @@ If you want to contribute, don't write code. Write tests. Then make them pass.
 ## Notes
 
 - `.ai-index.json` and `.ai-relations.json` are excluded from git by default.
-- Re-run `ai index` whenever your codebase changes significantly.
+- Re-run `geniesh index` whenever your codebase changes significantly.
 - Ollama must be running (`ollama serve`) before using any command.
 - Context budget is capped at 10,000 characters per turn.
 - Minified files (`.min.js`, `.min.css`) are automatically skipped during indexing.
