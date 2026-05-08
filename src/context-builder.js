@@ -1,6 +1,7 @@
 import { basename, extname, relative } from 'path';
 import { search } from './search.js';
 import { grepFiles } from './grep.js';
+import { extractSymbols, extractDiscoverySymbols } from './symbol-utils.js';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const CONTEXT_BUDGET     = 10000; // max chars of code context per turn
@@ -18,51 +19,9 @@ const PRIORITY_NAMES = new Set([
 ]);
 
 // ─── Symbol extraction ──────────────────────────────────────────────────────────
-// Only matches structurally identifiable code symbols — plain English words are
-// excluded by requiring interior uppercase, underscores, or dots.
-//
-//   camelCase:   streamResponse, buildIndex, runChat
-//   PascalCase:  StreamingMarkdownParser, MyClass  (must have ≥2 humps)
-//   snake_case:  build_index, run_query
-//   dotted:      config.path, req.body.id
-//
-const SYMBOL_RE = new RegExp(
-  '\\b(' +
-  '[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*' +          // camelCase
-  '|[A-Z][a-z]+(?:[A-Z][a-z0-9]+)+' +           // PascalCase (≥2 humps)
-  '|[a-z][a-z0-9]+_[a-z][a-z0-9_]+' +           // snake_case
-  '|[a-z][a-z0-9]+(?:\\.[a-z][a-z0-9]+)+' +     // dotted.path
-  '|[A-Z]{2,}(?:_[A-Z0-9]+)+' +                 // ALL_CAPS_CONSTANT
-  ')\\b',
-  'g',
-);
-
-// Depth-1 discovery: only camelCase and PascalCase are promoted from grep results.
-// snake_case is data (DB columns, config keys). dotted paths may be domains/URLs.
-// ALL_CAPS are usually constants defined in the same file — not worth following transitively.
-const DISCOVERY_RE = new RegExp(
-  '\\b(' +
-  '[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*' +          // camelCase only
-  '|[A-Z][a-z]+(?:[A-Z][a-z0-9]+)+' +           // PascalCase only
-  ')\\b',
-  'g',
-);
-
-// Domain / URL / file-extension filter for dotted.path symbols at any depth
-const DOMAIN_RE = /\.(com|net|org|io|co|php|js|ts|html|css|json|md|txt|edu|gov|app|dev)(\.|$)/i;
-
-export function extractSymbols(text) {
-  const raw = [...text.matchAll(SYMBOL_RE)].map(m => m[1]);
-  return [...new Set(raw)]
-    .filter(s => !DOMAIN_RE.test(s))
-    .slice(0, 6);
-}
-
-// Narrower extraction used only when discovering depth-1 symbols from grep results
-function extractDiscoverySymbols(text) {
-  const raw = [...text.matchAll(DISCOVERY_RE)].map(m => m[1]);
-  return [...new Set(raw)].slice(0, GREP_MAX_PER_DEPTH);
-}
+// Imported from symbol-utils.js:
+//   extractSymbols()          — broad extraction for user questions
+//   extractDiscoverySymbols() — narrower extraction for grep results (camelCase/PascalCase only)
 
 // ─── Index sorting ──────────────────────────────────────────────────────────────
 function fileTier(filePath) {
