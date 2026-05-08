@@ -1,6 +1,6 @@
 # geniesh
 
-A local AI developer assistant powered by **qwen3-coder** and a **RAG (Retrieval-Augmented Generation)** pipeline with **transitive grep**. Runs entirely on your machine — no API keys, no data leaving your system.
+A local AI developer assistant powered by **qwen3-coder** with a **RAG (Retrieval-Augmented Generation)** pipeline and **BFS relation-graph traversal**. Runs entirely on your machine — no API keys, no data leaving your system.
 
 ## Requirements
 
@@ -29,7 +29,7 @@ cd /path/to/ai-dev-llama-cli && npm link
 
 ### `ai index --dir <path>`
 
-Scans a directory, chunks all source files, generates embeddings, and saves a local index to `.ai-index.json`. Run this once before using `--dir` queries.
+Scans a directory, chunks all source files, generates embeddings, builds a **symbol relation graph**, and saves both `.ai-index.json` and `.ai-relations.json`. Run this once before using `ai chat`.
 
 ```bash
 ai index --dir src/
@@ -66,7 +66,7 @@ Supports function declarations, arrow functions, async functions, and class meth
 
 ### `ai "<query>" --dir <path>`
 
-Uses the RAG index to retrieve the most relevant code chunks for the query, then sends only those chunks to the LLM. **Requires running `ai index` first.**
+Uses the RAG index to retrieve the most relevant code chunks for the query, then sends only those chunks to the LLM. **Requires running `ai index` first.** (Does not use the relation graph — use `ai chat` for BFS traversal.)
 
 ```bash
 ai "how does authentication work?" --dir src/
@@ -80,7 +80,7 @@ The top 5 most semantically similar chunks (by cosine similarity) are retrieved 
 
 ### `ai chat`
 
-Starts an intelligent multi-turn chat session with auto-indexing, **transitive grep**, and RAG augmentation.
+Starts an intelligent multi-turn chat session with auto-indexing, **BFS relation-graph traversal**, and RAG augmentation.
 
 ```bash
 ai chat
@@ -94,19 +94,19 @@ If no `.ai-index.json` exists in the current directory, the index is built autom
 
 Each message triggers a two-tier context pipeline:
 
-1. **Transitive grep (depth 0 → 1)**  
-   Structural code symbols are extracted from your question (`camelCase`, `PascalCase`, `snake_case`, `ALL_CAPS`, `dotted.paths`). Those symbols are grepped across all files. The code windows found at depth 0 are then scanned for *new* symbols, which are grepped again at depth 1. This pulls in call targets, referenced constants, and related methods the model would otherwise never see.
+1. **BFS relation-graph traversal (budget-limited)**  
+   Code symbols are extracted from your question (`camelCase`, `PascalCase`, `snake_case`, `ALL_CAPS`, `dotted.paths`). These seed a breadth-first search over a pre-built **symbol relation graph** (`.ai-relations.json`) that maps every symbol to the files it appears in and every file to the symbols it contains. At each round, symbols are grepped to retrieve code windows, and the relation graph reveals new symbols from the same files — no re-grepping needed. The BFS continues until the 10,000-character context budget is exhausted (frontier capped at 20 symbols per round). If the question has no code symbols, the BFS is seeded from the top RAG chunks instead.
 
 2. **RAG (remaining budget)**  
    Cosine similarity search fills any remaining context budget, with README and `.md` files prioritised.
 
-During context building, the depth log is printed in grey:
+During context building, the BFS log is printed in grey:
 ```
-  [depth 0] grepping: methodName, itemTypeUtil
-  [depth 0] added 3 window(s), budget used: 4120/10000
-  [depth 0→1] discovered: piq, apiResponse, integrationId
-  [depth 1] grepping: piq, apiResponse, integrationId
-  [depth 1] added 2 window(s), budget used: 7340/10000
+  [bfs 0] symbols: methodName, itemTypeUtil
+  [bfs 0] added 3 window(s), budget used: 4120/10000
+  [bfs 0→1] discovered: piq, apiResponse, integrationId (+2 more)
+  [bfs 1] symbols: piq, apiResponse, integrationId
+  [bfs 1] added 2 window(s), budget used: 7340/10000
 ```
 
 ```
@@ -163,9 +163,10 @@ Indexing pipeline:
 
 Chat context pipeline (per turn):
   extract symbols from question (camelCase/PascalCase/snake_case/ALL_CAPS/dotted)
-    → depth-0 grep across all files
-    → extract new symbols from grep results
-    → depth-1 grep for discovered symbols
+    → seed BFS from question symbols (or top RAG chunks if none found)
+    → for each round: grep symbols → retrieve code windows
+    → discover new symbols via pre-built relation graph (no re-grepping)
+    → repeat until budget exhausted (frontier ≤ 20)
     → fill remaining budget with RAG (cosine similarity, MD files first)
     → inject as context prefix to LLM message
 
@@ -186,20 +187,22 @@ src/
 ├── fs-utils.js         Directory scanning and file reading
 ├── chunker.js          Line-based code chunking
 ├── embedder.js         Ollama nomic-embed-text embedding
-├── indexer.js          Build, load, and save the RAG index
+├── indexer.js          Build, load, and save the RAG index + relation graph
 ├── search.js           Cosine similarity search
 ├── extractor.js        Named function extraction
 ├── grep.js             Symbol search and context extraction
-├── context-builder.js  Transitive grep + RAG context pipeline
+├── symbol-utils.js     Shared symbol extraction regexes and functions
+├── relations.js        Relation graph builder, loader, and data structures
+├── context-builder.js  BFS relation-graph + RAG context pipeline
 ├── prompt.js           Prompt templates with context injection
 └── runner.js           Streaming Ollama LLM calls
 ```
 
 ## Notes
 
-- The `.ai-index.json` file is excluded from git by default.
+- `.ai-index.json` and `.ai-relations.json` are excluded from git by default.
 - Re-run `ai index` whenever your codebase changes significantly.
 - Ollama must be running (`ollama serve`) before using any command.
 - Context budget is capped at 10,000 characters per turn.
 - Minified files (`.min.js`, `.min.css`) are automatically skipped during indexing.
-- Transitive grep depth is capped at 2 levels with max 6 new symbols per level to prevent runaway context expansion.
+- The relation graph uses `Object.hasOwn()` for map-entry checks to avoid Object.prototype property collisions (e.g. `toString`, `constructor`).
