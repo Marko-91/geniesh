@@ -26,6 +26,11 @@ export function extractSymbols(text) {
     .slice(0, 6);
 }
 
+export function extractAllSymbols(text) {
+  const raw = [...text.matchAll(SYMBOL_RE)].map(m => m[1]);
+  return [...new Set(raw)].filter(s => !DOMAIN_RE.test(s));
+}
+
 export function extractDiscoverySymbols(text, maxResults = 6) {
   const raw = [...text.matchAll(DISCOVERY_RE)].map(m => m[1]);
   return [...new Set(raw)].slice(0, maxResults);

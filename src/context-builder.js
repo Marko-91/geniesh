@@ -1,15 +1,13 @@
 import { basename, extname, relative } from 'path';
 import { search } from './search.js';
 import { grepFiles } from './grep.js';
-import { extractSymbols, extractDiscoverySymbols } from './symbol-utils.js';
+import { extractSymbols } from './symbol-utils.js';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const CONTEXT_BUDGET     = 10000; // max chars of code context per turn
 const MAX_CHAT_TURNS     = 8;     // sliding window: keep last N user/assistant pairs
 const RAG_TOP_K          = 8;     // cosine candidates to consider
 const GREP_CONTEXT_LINES = 15;    // lines around each grep match
-const GREP_MAX_DEPTH     = 2;     // transitive grep: depth 0 = question symbols, depth 1 = symbols found in results
-const GREP_MAX_PER_DEPTH = 6;     // max new symbols to expand at each depth level
 const RAG_TOP_FILES      = 12;    // max files from RAG to prioritize for grep
 
 // Priority-1 filenames (loaded first, regardless of score)
@@ -21,7 +19,6 @@ const PRIORITY_NAMES = new Set([
 // ─── Symbol extraction ──────────────────────────────────────────────────────────
 // Imported from symbol-utils.js:
 //   extractSymbols()          — broad extraction for user questions
-//   extractDiscoverySymbols() — narrower extraction for grep results (camelCase/PascalCase only)
 
 // ─── Index sorting ──────────────────────────────────────────────────────────────
 function fileTier(filePath) {
@@ -52,14 +49,14 @@ function formatRetrievalTrace(trace, depthLogs = [], projectRoot = process.cwd()
 
   const lines = ['📌 \x1b[90mRetrieval trace:\x1b[0m'];
 
-  // Separate RAG and grep results
+  // Separate RAG and BFS results
   const ragResults = trace.filter(e => e.method === 'rag');
-  const grepByDepth = {};
-  
-  trace.filter(e => e.method.startsWith('grep-d')).forEach(e => {
-    const depth = parseInt(e.method.slice(-1));
-    if (!grepByDepth[depth]) grepByDepth[depth] = [];
-    grepByDepth[depth].push(e);
+  const bfsByRound = {};
+
+  trace.filter(e => e.method.startsWith('bfs-')).forEach(e => {
+    const round = parseInt(e.method.slice(4));
+    if (!bfsByRound[round]) bfsByRound[round] = [];
+    bfsByRound[round].push(e);
   });
 
   // Show RAG results first
@@ -69,33 +66,32 @@ function formatRetrievalTrace(trace, depthLogs = [], projectRoot = process.cwd()
     lines.push(`  \x1b[90m${relPath}:${lineNum}  RAG (score: ${(entry.score || 0).toFixed(2)})\x1b[0m`);
   }
 
-  // Show grep results organized by depth
-  for (const depth of Object.keys(grepByDepth).sort((a, b) => a - b)) {
-    const depthNum = parseInt(depth);
-    const grepResults = grepByDepth[depthNum].sort((a, b) => a.file.localeCompare(b.file));
+  // Show BFS results organized by round
+  for (const round of Object.keys(bfsByRound).sort((a, b) => a - b)) {
+    const roundNum = parseInt(round);
+    const bfsResults = bfsByRound[roundNum].sort((a, b) => a.file.localeCompare(b.file));
 
-    // Find and show the grep query log for this depth
-    const grepLog = depthLogs.find(l => l.includes(`[depth ${depthNum}] grepping:`));
-    if (grepLog) {
-      lines.push(`  \x1b[90m${grepLog}\x1b[0m`);
+    // Find and show the BFS query log for this round
+    const bfsLog = depthLogs.find(l => l.includes(`[bfs ${roundNum}] symbols:`));
+    if (bfsLog) {
+      lines.push(`  \x1b[90m${bfsLog}\x1b[0m`);
     }
 
-    // Show each grep result with colored line numbers
-    for (const entry of grepResults) {
+    for (const entry of bfsResults) {
       const relPath = shortenPath(relative(projectRoot, entry.file).replace(/\\/g, '/'));
       const lineNum = `\x1b[33m${entry.startLine}–${entry.endLine}\x1b[0m`;
       const hitCount = `\x1b[35m${entry.hitCount}\x1b[0m`;
-      lines.push(`    \x1b[90m${relPath}:${lineNum}  grep-d${depthNum} (${hitCount} hit${entry.hitCount > 1 ? 's' : ''})${entry.symbol ? ` [${entry.symbol}]` : ''}\x1b[0m`);
+      lines.push(`    \x1b[90m${relPath}:${lineNum}  bfs-${roundNum} (${hitCount} hit${entry.hitCount > 1 ? 's' : ''})${entry.symbol ? ` [${entry.symbol}]` : ''}\x1b[0m`);
     }
 
-    const addedLog = depthLogs.find(l => l.includes(`[depth ${depthNum}] added `));
+    const addedLog = depthLogs.find(l => l.includes(`[bfs ${roundNum}] added `));
     if (addedLog) {
       lines.push(`  \x1b[90m${addedLog}\x1b[0m`);
     }
 
-    // Show discovered symbols log for next depth
-    if (depthNum + 1 <= Math.max(...Object.keys(grepByDepth).map(Number))) {
-      const discoveryLog = depthLogs.find(l => l.includes(`[depth ${depthNum}→${depthNum + 1}]`));
+    // Show discovered symbols log for next round
+    if (roundNum + 1 <= Math.max(...Object.keys(bfsByRound).map(Number))) {
+      const discoveryLog = depthLogs.find(l => l.includes(`[bfs ${roundNum}→${roundNum + 1}]`));
       if (discoveryLog) {
         lines.push(`  \x1b[90m${discoveryLog}\x1b[0m`);
       }
@@ -116,8 +112,7 @@ function shortenPath(pathStr, maxSegments = 4) {
  * Builds a code context string for the current chat turn.
  *
  * Priority order (greedy, stops when budget exhausted):
- *   1. Transitive grep: depth-0 symbols from question → depth-1 symbols
- *      discovered inside grep results (up to GREP_MAX_DEPTH levels)
+ *   1. BFS traversal: relation-guided grep (budget-limited, no depth cap)
  *   2. MD-prioritised RAG chunks to fill remaining budget
  *
  * @param {string}   question    Current user message
@@ -125,7 +120,7 @@ function shortenPath(pathStr, maxSegments = 4) {
  * @param {string[]} allFiles    All scannable files (for grep)
  * @returns {Promise<{ contextString: string, log: string[], trace: object[] }>}
  */
-export async function buildChatContext(question, index, allFiles) {
+export async function buildChatContext(question, index, allFiles, relations) {
   const budget   = CONTEXT_BUDGET;
   let   used     = 0;
   const sections = [];
@@ -147,74 +142,116 @@ export async function buildChatContext(question, index, allFiles) {
     return true;
   }
 
-  // ── Tier 1: transitive grep ─────────────────────────────────────────────────
-  const depth0 = extractSymbols(question);
+  // ── Tier 1: relation-guided BFS (budget-limited) ──────────────────────────
+  let seedSymbols = extractSymbols(question);
 
-  // Get top RAG files to prioritize for grep
   const ragScored = await search(question, index, RAG_TOP_K);
   const ragFiles = [...new Set(ragScored.map(c => c.file))].slice(0, RAG_TOP_FILES);
 
-  if (depth0.length > 0 && allFiles.length > 0) {
-    const greppedSymbols = new Set(); // track what we've already grepped across all depths
+  // If question has no code symbols, seed BFS from symbols in top RAG chunks
+  if (seedSymbols.length === 0 && relations) {
+    const ragSymbols = new Set();
+    for (const c of ragScored.slice(0, 3)) {
+      const fileSyms = relations.byFile[c.file];
+      if (fileSyms) fileSyms.forEach(s => ragSymbols.add(s));
+    }
+    seedSymbols = [...ragSymbols].slice(0, 6);
+  }
 
-    let frontier = depth0; // symbols to grep at the current depth
+  let frontier = seedSymbols;
+  const seenSymbols = new Set();
+  const seenFiles = new Set();
+  let bfsRound = 0;
 
-    for (let depth = 0; depth < GREP_MAX_DEPTH; depth++) {
-      const toGrep = frontier.filter(s => !greppedSymbols.has(s));
-      if (toGrep.length === 0) break;
+  while (used < budget && frontier.length > 0) {
+    const toGrep = frontier.filter(s => !seenSymbols.has(s));
+    if (toGrep.length === 0) break;
 
-      log.push(`  [depth ${depth}] grepping: ${toGrep.join(', ')}`);
+    log.push(`  [bfs ${bfsRound}] symbols: ${toGrep.slice(0, 8).join(', ')}${toGrep.length > 8 ? ` (+${toGrep.length - 8})` : ''}`);
 
-      const discoveredTexts = []; // raw text of all windows found at this depth
-      let hitsThisDepth = 0;
+    const hitFiles = []; // files that matched this round — for relation lookup
+    let hitsThisRound = 0;
 
-      for (const sym of toGrep) {
-        if (used >= budget) break;
-        greppedSymbols.add(sym);
+    for (const sym of toGrep) {
+      if (used >= budget) break;
+      seenSymbols.add(sym);
 
-        // First try grep in top RAG files, then fall back to all files
-        let results;
-        try {
-          results = await grepFiles(sym, ragFiles, GREP_CONTEXT_LINES, depth);
-          if (results.length === 0) {
-            results = await grepFiles(sym, allFiles, GREP_CONTEXT_LINES, depth);
-          }
-        } catch {
-          continue;
+      let results;
+      try {
+        results = await grepFiles(sym, ragFiles, GREP_CONTEXT_LINES, bfsRound);
+        if (results.length === 0) {
+          results = await grepFiles(sym, allFiles, GREP_CONTEXT_LINES, bfsRound);
         }
+      } catch {
+        continue;
+      }
 
-        for (const { file, windows } of results) {
-          for (const win of windows) {
-            const metadata = {
-              method: `grep-d${depth}`,
-              symbol: sym,
-              hitCount: win.metadata?.hitCount || 1,
-              depth,
-            };
-            if (tryAdd(file, win.startLine, win.endLine, win.text, `${file} [d${depth}: ${sym}]`, metadata)) {
-              discoveredTexts.push(win.text);
-              hitsThisDepth++;
-            }
-            if (used >= budget) break;
+      for (const { file, windows } of results) {
+        if (!seenFiles.has(file)) {
+          seenFiles.add(file);
+          hitFiles.push(file);
+        }
+        for (const win of windows) {
+          const metadata = {
+            method: `bfs-${bfsRound}`,
+            symbol: sym,
+            hitCount: win.metadata?.hitCount || 1,
+          };
+          if (tryAdd(file, win.startLine, win.endLine, win.text, `${file} [${sym}]`, metadata)) {
+            hitsThisRound++;
           }
           if (used >= budget) break;
         }
-      }
-
-      log.push(`  [depth ${depth}] added ${hitsThisDepth} window(s), budget used: ${used}/${budget}`);
-
-      if (depth + 1 < GREP_MAX_DEPTH && used < budget) {
-        // Depth-1+: only camelCase/PascalCase promoted — snake_case and dotted are data noise
-        const combined = discoveredTexts.join('\n');
-        const newSymbols = extractDiscoverySymbols(combined)
-          .filter(s => !greppedSymbols.has(s));
-
-        if (newSymbols.length > 0) {
-          log.push(`  [depth ${depth}→${depth + 1}] discovered: ${newSymbols.join(', ')}`);
-        }
-        frontier = newSymbols;
+        if (used >= budget) break;
       }
     }
+
+    log.push(`  [bfs ${bfsRound}] added ${hitsThisRound} window(s), budget used: ${used}/${budget}`);
+
+    // Discover next frontier via relation map (NO re-grepping for discovery)
+    if (used < budget && relations && hitFiles.length > 0) {
+      const newSymbols = [];
+      const seenRelFiles = new Set();
+      for (const file of hitFiles) {
+        const fileSymbols = relations.byFile[file];
+        if (!fileSymbols) continue;
+        for (const sym of fileSymbols) {
+          if (!seenSymbols.has(sym) && !newSymbols.includes(sym)) {
+            newSymbols.push(sym);
+          }
+        }
+        // BFS across related files: discover new files through symbol overlap
+        for (const sym of fileSymbols) {
+          const symFiles = relations.bySymbol[sym];
+          if (!symFiles) continue;
+          for (const relatedFile of symFiles) {
+            if (seenFiles.has(relatedFile) || seenRelFiles.has(relatedFile)) continue;
+            seenRelFiles.add(relatedFile);
+            const relatedSyms = relations.byFile[relatedFile];
+            if (!relatedSyms) continue;
+            for (const rsym of relatedSyms) {
+              if (!seenSymbols.has(rsym) && !newSymbols.includes(rsym)) {
+                newSymbols.push(rsym);
+              }
+            }
+          }
+        }
+      }
+      const MAX_FRONTIER = 20;
+      const truncated = newSymbols.slice(0, MAX_FRONTIER);
+      if (newSymbols.length > 0) {
+        log.push(`  [bfs ${bfsRound}→${bfsRound + 1}] discovered: ${truncated.slice(0, 8).join(', ')}${newSymbols.length > 8 ? ` (+${newSymbols.length - 8})` : ''}`);
+      }
+      frontier = truncated;
+    } else if (used < budget && !relations && hitFiles.length > 0) {
+      // Fallback: grep-text symbol extraction (no relations available)
+      // Not implemented in this path — just stop
+      frontier = [];
+    } else {
+      frontier = [];
+    }
+
+    bfsRound++;
   }
 
   // ── Tier 2: MD-prioritised RAG chunks (fill remaining budget) ──────────────

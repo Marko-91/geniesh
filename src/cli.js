@@ -5,6 +5,7 @@ import { createInterface } from 'readline';
 import { readFile } from './fs-utils.js';
 import { extractFunction } from './extractor.js';
 import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './indexer.js';
+import { loadRelations, relationsExist } from './relations.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt } from './prompt.js';
 import { runQuery, runChat, setModel } from './runner.js';
@@ -93,6 +94,11 @@ program
       allFiles = await scanDir(dir);
     }
 
+    let relations = null;
+    if (!hasExplicit && await relationsExist()) {
+      try { relations = await loadRelations(); } catch {}
+    }
+
     // ─ 3. System prompt ───────────────────────────────────────────────────────
     const messages = [
       {
@@ -143,7 +149,7 @@ program
       const symbols = extractSymbols(trimmed);
       const ctxSpinner = ora({
         text: symbols.length
-          ? `Building context (RAG + grep: ${symbols.join(', ')})…`
+          ? `Building context (BFS + RAG: ${symbols.join(', ')})…`
           : 'Building context (RAG)…',
         color: 'cyan',
       }).start();
@@ -151,12 +157,12 @@ program
       let contextText = '';
       let traceFormatted = '';
       try {
-        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles);
+        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles, relations);
         contextText = contextString;
         traceFormatted = trace;
         ctxSpinner.succeed(
           symbols.length
-            ? `Context ready — transitive grep for: ${symbols.join(', ')}`
+            ? `Context ready — BFS traversal for: ${symbols.join(', ')}`
             : 'Context ready — RAG',
         );
         if (traceFormatted) {

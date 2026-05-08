@@ -11,6 +11,7 @@
 
 # Llama CLI outputs
 /.ai-index.json
+/.ai-relations.json
 
 # Temporary files and directories
 /tmp/

@@ -2,6 +2,7 @@ import { readFile as fsReadFile, writeFile, unlink, access } from 'fs/promises';
 import { scanDir, readFile as readSourceFile } from './fs-utils.js';
 import { chunkFile } from './chunker.js';
 import { embed } from './embedder.js';
+import { buildRelations, saveRelations } from './relations.js';
 import ora from 'ora';
 
 const INDEX_FILE = '.ai-index.json';
@@ -53,6 +54,16 @@ export async function buildIndex(dir) {
   const saveSpinner = ora('Saving index…').start();
   await saveIndex(index);
   saveSpinner.succeed(`Index saved → ${INDEX_FILE}  (${processed} files, ${totalChunks} chunks${skipped ? `, ${skipped} skipped` : ''})`);
+
+  const relSpinner = ora('Building relation graph…').start();
+  try {
+    const relations = await buildRelations(dir);
+    await saveRelations(relations);
+    const symCount = Object.keys(relations.bySymbol).length;
+    relSpinner.succeed(`Relation graph saved → .ai-relations.json  (${symCount} symbols, ${files.length} files)`);
+  } catch (err) {
+    relSpinner.fail(`Relation graph skipped: ${err.message}`);
+  }
 
   return index;
 }
