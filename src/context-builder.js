@@ -1,4 +1,4 @@
-import { basename, extname } from 'path';
+import { basename, extname, relative } from 'path';
 import { search } from './search.js';
 import { grepFiles } from './grep.js';
 
@@ -79,6 +79,78 @@ function sortedIndex(index) {
   });
 }
 
+/**
+ * Formats retrieval trace metadata into a human-readable summary with depth organization.
+ *
+ * @param {object[]} trace          Array of { file, startLine, endLine, method, score, symbol, hitCount, depth }
+ * @param {string[]} [depthLogs]    Debug logs from grep depths (optional)
+ * @param {string}   [projectRoot]  Project root for relative paths (defaults to cwd)
+ * @returns {string}  Formatted trace output
+ */
+function formatRetrievalTrace(trace, depthLogs = [], projectRoot = process.cwd()) {
+  if (trace.length === 0) return '';
+
+  const lines = ['📌 \x1b[90mRetrieval trace:\x1b[0m'];
+
+  // Separate RAG and grep results
+  const ragResults = trace.filter(e => e.method === 'rag');
+  const grepByDepth = {};
+  
+  trace.filter(e => e.method.startsWith('grep-d')).forEach(e => {
+    const depth = parseInt(e.method.slice(-1));
+    if (!grepByDepth[depth]) grepByDepth[depth] = [];
+    grepByDepth[depth].push(e);
+  });
+
+  // Show RAG results first
+  for (const entry of ragResults) {
+    const relPath = shortenPath(relative(projectRoot, entry.file).replace(/\\/g, '/'));
+    const lineNum = `\x1b[36m${entry.startLine}–${entry.endLine}\x1b[0m`;
+    lines.push(`  \x1b[90m${relPath}:${lineNum}  RAG (score: ${(entry.score || 0).toFixed(2)})\x1b[0m`);
+  }
+
+  // Show grep results organized by depth
+  for (const depth of Object.keys(grepByDepth).sort((a, b) => a - b)) {
+    const depthNum = parseInt(depth);
+    const grepResults = grepByDepth[depthNum].sort((a, b) => a.file.localeCompare(b.file));
+
+    // Find and show the grep query log for this depth
+    const grepLog = depthLogs.find(l => l.includes(`[depth ${depthNum}] grepping:`));
+    if (grepLog) {
+      lines.push(`  \x1b[90m${grepLog}\x1b[0m`);
+    }
+
+    // Show each grep result with colored line numbers
+    for (const entry of grepResults) {
+      const relPath = shortenPath(relative(projectRoot, entry.file).replace(/\\/g, '/'));
+      const lineNum = `\x1b[33m${entry.startLine}–${entry.endLine}\x1b[0m`;
+      const hitCount = `\x1b[35m${entry.hitCount}\x1b[0m`;
+      lines.push(`    \x1b[90m${relPath}:${lineNum}  grep-d${depthNum} (${hitCount} hit${entry.hitCount > 1 ? 's' : ''})${entry.symbol ? ` [${entry.symbol}]` : ''}\x1b[0m`);
+    }
+
+    const addedLog = depthLogs.find(l => l.includes(`[depth ${depthNum}] added `));
+    if (addedLog) {
+      lines.push(`  \x1b[90m${addedLog}\x1b[0m`);
+    }
+
+    // Show discovered symbols log for next depth
+    if (depthNum + 1 <= Math.max(...Object.keys(grepByDepth).map(Number))) {
+      const discoveryLog = depthLogs.find(l => l.includes(`[depth ${depthNum}→${depthNum + 1}]`));
+      if (discoveryLog) {
+        lines.push(`  \x1b[90m${discoveryLog}\x1b[0m`);
+      }
+    }
+  }
+
+  return lines.join('\n');
+}
+
+function shortenPath(pathStr, maxSegments = 4) {
+  const parts = pathStr.split('/');
+  if (parts.length <= maxSegments) return pathStr;
+  return `.../${parts.slice(-maxSegments).join('/')}`;
+}
+
 // ─── Context builder ─────────────────────────────────────────────────────────────
 /**
  * Builds a code context string for the current chat turn.
@@ -91,7 +163,7 @@ function sortedIndex(index) {
  * @param {string}   question    Current user message
  * @param {object[]} index       Full RAG index
  * @param {string[]} allFiles    All scannable files (for grep)
- * @returns {Promise<{ contextString: string, log: string[] }>}
+ * @returns {Promise<{ contextString: string, log: string[], trace: object[] }>}
  */
 export async function buildChatContext(question, index, allFiles) {
   const budget   = CONTEXT_BUDGET;
@@ -99,8 +171,9 @@ export async function buildChatContext(question, index, allFiles) {
   const sections = [];
   const seen     = new Set();  // deduplicate by "file:startLine"
   const log      = [];         // human-readable depth log lines
+  const trace    = [];         // retrieval method tracing
 
-  function tryAdd(file, startLine, endLine, text, label) {
+  function tryAdd(file, startLine, endLine, text, label, traceMetadata) {
     const key = `${file}:${startLine}`;
     if (seen.has(key)) return false;
     const block = `// ${label || file} (lines ${startLine}–${endLine})\n${text}\n`;
@@ -108,6 +181,9 @@ export async function buildChatContext(question, index, allFiles) {
     sections.push(block);
     seen.add(key);
     used += block.length;
+    if (traceMetadata) {
+      trace.push({ file, startLine, endLine, ...traceMetadata });
+    }
     return true;
   }
 
@@ -134,14 +210,20 @@ export async function buildChatContext(question, index, allFiles) {
 
         let results;
         try {
-          results = await grepFiles(sym, allFiles, GREP_CONTEXT_LINES);
+          results = await grepFiles(sym, allFiles, GREP_CONTEXT_LINES, depth);
         } catch {
           continue;
         }
 
         for (const { file, windows } of results) {
           for (const win of windows) {
-            if (tryAdd(file, win.startLine, win.endLine, win.text, `${file} [d${depth}: ${sym}]`)) {
+            const metadata = {
+              method: `grep-d${depth}`,
+              symbol: sym,
+              hitCount: win.metadata?.hitCount || 1,
+              depth,
+            };
+            if (tryAdd(file, win.startLine, win.endLine, win.text, `${file} [d${depth}: ${sym}]`, metadata)) {
               discoveredTexts.push(win.text);
               hitsThisDepth++;
             }
@@ -176,15 +258,27 @@ export async function buildChatContext(question, index, allFiles) {
     if (used >= budget) break;
     const key = `${entry.file}:${entry.startLine}`;
     if (scoredKeys.has(key)) {
-      tryAdd(entry.file, entry.startLine, entry.endLine, entry.chunk);
+      const ragMetadata = scored.find(s => s.file === entry.file && s.startLine === entry.startLine);
+      tryAdd(entry.file, entry.startLine, entry.endLine, entry.chunk, undefined, {
+        method: 'rag',
+        score: ragMetadata?.score || 0,
+      });
     }
   }
   for (const c of scored) {
     if (used >= budget) break;
-    tryAdd(c.file, c.startLine, c.endLine, c.chunk);
+    tryAdd(c.file, c.startLine, c.endLine, c.chunk, undefined, {
+      method: 'rag',
+      score: c.score || 0,
+    });
   }
 
-  return { contextString: sections.join('\n---\n\n'), log };
+  return {
+    contextString: sections.join('\n---\n\n'),
+    log,
+    trace,
+    traceFormatted: formatRetrievalTrace(trace, log, process.cwd()),
+  };
 }
 
 // ─── Sliding window ─────────────────────────────────────────────────────────────

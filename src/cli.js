@@ -148,16 +148,18 @@ program
       }).start();
 
       let contextText = '';
+      let traceFormatted = '';
       try {
-        const { contextString, log } = await buildChatContext(trimmed, index, allFiles);
+        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles);
         contextText = contextString;
+        traceFormatted = trace;
         ctxSpinner.succeed(
           symbols.length
             ? `Context ready — transitive grep for: ${symbols.join(', ')}`
             : 'Context ready — RAG',
         );
-        if (log.length > 0) {
-          log.forEach(line => console.log(`\x1b[90m${line}\x1b[0m`));
+        if (traceFormatted) {
+          console.log(traceFormatted);
         }
       } catch (err) {
         ctxSpinner.warn(`Context build failed (${err.message}), falling back to plain message`);
