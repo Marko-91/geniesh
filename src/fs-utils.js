@@ -4,7 +4,7 @@ import { join, extname } from 'path';
 
 const IGNORED_DIRS = new Set([
   'node_modules', 'dist', '.git', '.next', 'build', 'out',
-  'coverage', '__pycache__', 'venv', '.venv', 'vendor', '.cache', '__tests__', 'test', 'tests'
+  'coverage', '__pycache__', 'venv', '.venv', 'vendor', '.cache'
 ]);
 
 const SUPPORTED_EXTS = new Set([
@@ -16,7 +16,11 @@ const SUPPORTED_EXTS = new Set([
 const IGNORED_EXTS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg',
   '.zip', '.tar', '.gz', '.7z', '.pdf', '.docx', '.xlsx',
-  '.mp4', '.mp3', '.avi', '.mov', 'package-lock.json', 'yarn.lock',
+  '.mp4', '.mp3', '.avi', '.mov',
+]);
+
+const IGNORED_FILES = new Set([
+  '.ai-index.json', 'package-lock.json', 'yarn.lock',
 ]);
 
 export async function scanDir(dir) {
@@ -38,7 +42,7 @@ export async function scanDir(dir) {
         }
       } else if (
         entry.isFile() &&
-        entry.name !== '.ai-index.json' && entry.name !== 'package-lock.json' &&
+        !IGNORED_FILES.has(entry.name) &&
         !entry.name.endsWith('.min.js') && !entry.name.endsWith('.min.css') &&
         SUPPORTED_EXTS.has(extname(entry.name).toLowerCase())
       ) {
