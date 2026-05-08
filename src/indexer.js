@@ -93,10 +93,44 @@ export async function indexExists() {
 }
 
 /**
- * Index a single file
- * @param {string} filePath
+ * Builds an in-memory index from an explicit list of file paths.
+ * Does NOT write to disk and does NOT delete any existing index.
+ * Used by `ai chat --files / --dirs` for explicit context sessions.
+ *
+ * @param {string[]} files
+ * @returns {Promise<object[]>}
  */
-export async function buildIndexFromFile(filePath) {
+export async function buildIndexFromFileList(files) {
+  if (files.length === 0) return [];
+
+  const index = [];
+  let processed = 0;
+  let skipped = 0;
+  let totalChunks = 0;
+
+  for (const filePath of files) {
+    const fileSpinner = ora({ text: `Embedding ${filePath}…` }).start();
+    try {
+      const content = await readSourceFile(filePath);
+      const chunks = chunkFile(filePath, content);
+
+      for (const c of chunks) {
+        const embedding = await embed(c.chunk);
+        index.push({ file: c.file, chunk: c.chunk, startLine: c.startLine, endLine: c.endLine, embedding });
+        totalChunks++;
+      }
+
+      fileSpinner.succeed(`${filePath}  — ${chunks.length} chunk${chunks.length !== 1 ? 's' : ''} embedded`);
+      processed++;
+    } catch (err) {
+      fileSpinner.fail(`${filePath}  — skipped: ${err.message}`);
+      skipped++;
+    }
+  }
+
+  console.log(`\nExplicit context: ${processed} file(s), ${totalChunks} chunks${skipped ? `, ${skipped} skipped` : ''}`);
+  return index;
+
   try {
     const content = await readSourceFile(filePath);
     const chunks = chunkFile(filePath, content);
