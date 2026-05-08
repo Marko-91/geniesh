@@ -25,6 +25,26 @@ cd /path/to/ai-dev-llama-cli && npm link
 # node src/cli.js index --dir .
 ```
 
+## Quickstart
+
+The fastest way to get answers about any codebase:
+
+```bash
+# cd into any project and start chatting — auto-indexes on first use
+ai chat
+
+# Ask about specific files — geniesh loads them as full context
+#   "what does the render function in lib/application.js do?"
+#   "find the bug in src/auth.js around line 42"
+#   "how does Router.handle dispatch requests?"
+
+# Or use one-shot queries for quick analysis
+ai "are there any security issues?" --file src/auth.js
+ai refs validateToken --dir src/ --explain
+```
+
+That's it. No config files, no API keys, no data leaving your machine.
+
 ## Commands
 
 ### `ai index --dir <path>`
@@ -80,7 +100,7 @@ The top 5 most semantically similar chunks (by cosine similarity) are retrieved 
 
 ### `ai chat`
 
-Starts an intelligent multi-turn chat session with auto-indexing, **BFS relation-graph traversal**, and RAG augmentation.
+Starts an intelligent multi-turn chat session with auto-indexing, **BFS relation-graph traversal**, **auto-detected file references**, and RAG augmentation.
 
 ```bash
 ai chat

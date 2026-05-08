@@ -125,6 +125,12 @@ program
     console.log(`📚  Index     : ${index.length} chunks`);
     console.log('────────────────────────────────────────────────────────────\n');
 
+    console.log('\x1b[90m💡 Tips\x1b[0m');
+    console.log('\x1b[90m   • Mention a file path to load it as full context:  "look at lib/application.js"\x1b[0m');
+    console.log('\x1b[90m   • Ask about specific symbols:                     "how does Router.handle work?"\x1b[0m');
+    console.log('\x1b[90m   • Use concrete function/method names for best BFS\x1b[0m');
+    console.log('\x1b[90m   • Type \x1b[33mexit\x1b[90m or Ctrl+C to quit\x1b[0m\n');
+
     process.on('SIGINT', () => {
       console.log('\nBye!');
       rl.close();
