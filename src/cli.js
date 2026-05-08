@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import { createInterface } from 'readline';
+import { basename } from 'path';
 import { readFile } from './fs-utils.js';
 import { extractFunction } from './extractor.js';
 import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './indexer.js';
@@ -12,7 +13,7 @@ import { runQuery, runChat, setModel } from './runner.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
 import { extractSymbols } from './symbol-utils.js';
-import { scanDir } from './fs-utils.js';
+import { scanDir, extractFileRefs } from './fs-utils.js';
 import { execSync } from 'child_process';
 import ora from 'ora';
 
@@ -147,23 +148,28 @@ program
 
       // ─ Build context ─────────────────────────────────────────────────────────
       const symbols = extractSymbols(trimmed);
+      const fileRefs = extractFileRefs(trimmed, allFiles);
       const ctxSpinner = ora({
         text: symbols.length
           ? `Building context (BFS + RAG: ${symbols.join(', ')})…`
-          : 'Building context (RAG)…',
+          : fileRefs.length
+            ? `Building context (files: ${fileRefs.map(f => basename(f)).join(', ')})…`
+            : 'Building context (RAG)…',
         color: 'cyan',
       }).start();
 
       let contextText = '';
       let traceFormatted = '';
       try {
-        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles, relations);
+        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles, relations, fileRefs);
         contextText = contextString;
         traceFormatted = trace;
         ctxSpinner.succeed(
           symbols.length
             ? `Context ready — BFS traversal for: ${symbols.join(', ')}`
-            : 'Context ready — RAG',
+            : fileRefs.length
+              ? `Context ready — file-ref: ${fileRefs.map(f => basename(f)).join(', ')}`
+              : 'Context ready — RAG',
         );
         if (traceFormatted) {
           console.log(traceFormatted);

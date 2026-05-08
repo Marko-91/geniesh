@@ -1,6 +1,6 @@
 import { readFile as fsReadFile } from 'fs/promises';
 import { readdir } from 'fs/promises';
-import { join, extname } from 'path';
+import { join, extname, basename } from 'path';
 
 const IGNORED_DIRS = new Set([
   'node_modules', 'dist', '.git', '.next', 'build', 'out',
@@ -59,4 +59,52 @@ export async function scanDir(dir) {
 
 export async function readFile(filePath) {
   return fsReadFile(filePath, 'utf-8');
+}
+
+const FILE_REF_EXTS = new Set([
+  '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',
+  '.py', '.go', '.rs', '.java', '.rb', '.php',
+  '.yml', '.yaml', '.json', '.md', '.sh',
+]);
+
+/**
+ * Detects file references in a user query by matching words against
+ * known project files. Handles full paths, partial paths, and basenames.
+ * @param {string}   query     User message
+ * @param {string[]} allFiles  All scannable files in the project
+ * @returns {string[]}  Up to 3 matched file paths
+ */
+export function extractFileRefs(query, allFiles) {
+  const words = query.split(/\s+/);
+  const matches = new Set();
+
+  for (const word of words) {
+    const clean = word.replace(/[.,;:!?)\]]+$/, '');
+    if (clean.length < 3) continue;
+    if (FILE_REF_EXTS.size > 0) {
+      const hasExt = FILE_REF_EXTS.has(extname(clean).toLowerCase());
+      if (!hasExt && !clean.includes('/') && !clean.includes('\\')) continue;
+    }
+
+    const normalized = clean.replace(/\\/g, '/').replace(/^\.\//, '');
+
+    for (const fp of allFiles) {
+      const fpNorm = fp.replace(/\\/g, '/');
+
+      // Exact basename match
+      if (basename(fpNorm) === normalized || basename(fpNorm).toLowerCase() === normalized.toLowerCase()) {
+        matches.add(fp);
+        continue;
+      }
+
+      // Partial path match (e.g. "lib/application.js" matches ".../express/lib/application.js")
+      if (normalized.includes('/') && fpNorm.includes(normalized)) {
+        matches.add(fp);
+      }
+    }
+
+    if (matches.size >= 3) break;
+  }
+
+  return [...matches];
 }

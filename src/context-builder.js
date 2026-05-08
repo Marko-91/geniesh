@@ -2,6 +2,7 @@ import { basename, extname, relative } from 'path';
 import { search } from './search.js';
 import { grepFiles } from './grep.js';
 import { extractSymbols } from './symbol-utils.js';
+import { readFile } from './fs-utils.js';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const CONTEXT_BUDGET     = 10000; // max chars of code context per turn
@@ -59,8 +60,9 @@ function formatRetrievalTrace(trace, depthLogs = [], projectRoot = process.cwd()
 
   const lines = ['📌 \x1b[90mRetrieval trace:\x1b[0m'];
 
-  // Separate RAG and BFS results
+  // Separate RAG, file-ref, and BFS results
   const ragResults = trace.filter(e => e.method === 'rag');
+  const fileRefResults = trace.filter(e => e.method === 'file-ref');
   const bfsByRound = {};
 
   trace.filter(e => e.method.startsWith('bfs-')).forEach(e => {
@@ -74,6 +76,15 @@ function formatRetrievalTrace(trace, depthLogs = [], projectRoot = process.cwd()
     const relPath = shortenPath(relative(projectRoot, entry.file).replace(/\\/g, '/'));
     const lineNum = `\x1b[36m${entry.startLine}–${entry.endLine}\x1b[0m`;
     lines.push(`  \x1b[90m${relPath}:${lineNum}  RAG (score: ${(entry.score || 0).toFixed(2)})\x1b[0m`);
+  }
+
+  // Show file-ref results
+  for (const entry of fileRefResults) {
+    const relPath = shortenPath(relative(projectRoot, entry.file).replace(/\\/g, '/'));
+    const lineNum = `\x1b[36m${entry.startLine}–${entry.endLine}\x1b[0m`;
+    const totalLines = entry.endLine - entry.startLine + 1;
+    const isTruncated = entry._truncated;
+    lines.push(`  \x1b[90m${relPath}:${lineNum}  file-ref (${totalLines} lines${isTruncated ? ', truncated' : ''})\x1b[0m`);
   }
 
   // Show BFS results organized by round
@@ -108,6 +119,13 @@ function formatRetrievalTrace(trace, depthLogs = [], projectRoot = process.cwd()
     }
   }
 
+  // Show any non-BFS, non-RAG logs that haven't been rendered
+  for (const entry of depthLogs) {
+    if (entry.startsWith('  [file-ref]')) {
+      lines.push(`  \x1b[90m${entry}\x1b[0m`);
+    }
+  }
+
   return lines.join('\n');
 }
 
@@ -128,9 +146,11 @@ function shortenPath(pathStr, maxSegments = 4) {
  * @param {string}   question    Current user message
  * @param {object[]} index       Full RAG index
  * @param {string[]} allFiles    All scannable files (for grep)
+ * @param {object}   [relations] Relation graph (byFile/bySymbol)
+ * @param {string[]} [fileRefs]  Explicit file paths referenced in the query
  * @returns {Promise<{ contextString: string, log: string[], trace: object[] }>}
  */
-export async function buildChatContext(question, index, allFiles, relations) {
+export async function buildChatContext(question, index, allFiles, relations, fileRefs = []) {
   const budget   = CONTEXT_BUDGET;
   let   used     = 0;
   const sections = [];
@@ -150,6 +170,26 @@ export async function buildChatContext(question, index, allFiles, relations) {
       trace.push({ file, startLine, endLine, ...traceMetadata });
     }
     return true;
+  }
+
+  // ── Tier 0: explicit file references (like --file in chat) ─────────────
+  for (const fp of fileRefs) {
+    if (used >= budget) break;
+    try {
+      const content = await readFile(fp);
+      const lineCount = content.split('\n').length;
+      // Leave 200 chars margin for tryAdd wrapper (label + line nums)
+      const maxLen = Math.max(budget - used - 200, 0);
+      const isTruncated = content.length > maxLen;
+      const fileText = isTruncated
+        ? content.slice(0, maxLen) + '\n... (truncated)'
+        : content;
+      if (tryAdd(fp, 1, lineCount, fileText, `file-ref: ${fp}`, { method: 'file-ref', _truncated: isTruncated })) {
+        log.push(`  [file-ref] loaded ${fp} (${lineCount} lines)`);
+      }
+    } catch {
+      log.push(`  [file-ref] failed to load ${fp}`);
+    }
   }
 
   // ── Tier 1: relation-guided BFS (budget-limited) ──────────────────────────
