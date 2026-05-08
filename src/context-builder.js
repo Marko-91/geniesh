@@ -21,11 +21,21 @@ const PRIORITY_NAMES = new Set([
 //   extractSymbols()          — broad extraction for user questions
 
 // ─── Index sorting ──────────────────────────────────────────────────────────────
+const HIGH_PRIORITY_DIRS = /[/\\](src|lib|app|core|include|packages)[/\\]/;
+const LOW_PRIORITY_DIRS  = /[/\\](test|spec|__tests__|__mocks__|fixtures|examples)[/\\]/;
+
 function fileTier(filePath) {
   const name = basename(filePath).toLowerCase();
   if (PRIORITY_NAMES.has(name)) return 0;           // tier 1: named docs
   if (extname(name) === '.md') return 1;             // tier 2: other markdown
   return 2;                                          // tier 3: code files
+}
+
+// Score for sorting grep results: source dirs first, test dirs last
+function dirScore(filePath) {
+  if (HIGH_PRIORITY_DIRS.test(filePath)) return -1;
+  if (LOW_PRIORITY_DIRS.test(filePath)) return 1;
+  return 0;
 }
 
 function sortedIndex(index) {
@@ -185,6 +195,33 @@ export async function buildChatContext(question, index, allFiles, relations) {
       } catch {
         continue;
       }
+
+      // Dotted symbol (e.g. Layer.match) rarely exists literally in source
+      // (it's usually Layer.prototype.match). Prefer segment greps so the
+      // actual implementation file (lib/router/layer.js) fills budget first.
+      if (sym.includes('.')) {
+        const segResults = [];
+        for (const segment of sym.split('.')) {
+          if (segment.length < 2) continue;
+          if (used >= budget) break;
+          try {
+            let r = await grepFiles(segment, ragFiles, GREP_CONTEXT_LINES, bfsRound);
+            if (r.length === 0) {
+              r = await grepFiles(segment, allFiles, GREP_CONTEXT_LINES, bfsRound);
+            }
+            segResults.push(...r);
+          } catch {
+            continue;
+          }
+        }
+        // Insert segment results BEFORE literal results so they are
+        // added to context first (dir priority also helps).
+        results = [...segResults, ...results];
+      }
+
+      // Sort: source dirs first, test dirs last — so implementation
+      // windows fill budget before test-noise
+      results.sort((a, b) => dirScore(a.file) - dirScore(b.file));
 
       for (const { file, windows } of results) {
         if (!seenFiles.has(file)) {
