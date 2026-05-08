@@ -9,6 +9,7 @@ const RAG_TOP_K          = 8;     // cosine candidates to consider
 const GREP_CONTEXT_LINES = 15;    // lines around each grep match
 const GREP_MAX_DEPTH     = 2;     // transitive grep: depth 0 = question symbols, depth 1 = symbols found in results
 const GREP_MAX_PER_DEPTH = 6;     // max new symbols to expand at each depth level
+const RAG_TOP_FILES      = 12;    // max files from RAG to prioritize for grep
 
 // Priority-1 filenames (loaded first, regardless of score)
 const PRIORITY_NAMES = new Set([
@@ -190,6 +191,10 @@ export async function buildChatContext(question, index, allFiles) {
   // ── Tier 1: transitive grep ─────────────────────────────────────────────────
   const depth0 = extractSymbols(question);
 
+  // Get top RAG files to prioritize for grep
+  const ragScored = await search(question, index, RAG_TOP_K);
+  const ragFiles = [...new Set(ragScored.map(c => c.file))].slice(0, RAG_TOP_FILES);
+
   if (depth0.length > 0 && allFiles.length > 0) {
     const greppedSymbols = new Set(); // track what we've already grepped across all depths
 
@@ -208,9 +213,13 @@ export async function buildChatContext(question, index, allFiles) {
         if (used >= budget) break;
         greppedSymbols.add(sym);
 
+        // First try grep in top RAG files, then fall back to all files
         let results;
         try {
-          results = await grepFiles(sym, allFiles, GREP_CONTEXT_LINES, depth);
+          results = await grepFiles(sym, ragFiles, GREP_CONTEXT_LINES, depth);
+          if (results.length === 0) {
+            results = await grepFiles(sym, allFiles, GREP_CONTEXT_LINES, depth);
+          }
         } catch {
           continue;
         }
@@ -250,7 +259,7 @@ export async function buildChatContext(question, index, allFiles) {
   }
 
   // ── Tier 2: MD-prioritised RAG chunks (fill remaining budget) ──────────────
-  const scored = await search(question, index, RAG_TOP_K);
+  const scored = ragScored; // reuse the already computed RAG results
   const sorted = sortedIndex(index);
 
   const scoredKeys = new Set(scored.map(c => `${c.file}:${c.startLine}`));
