@@ -159,13 +159,13 @@ Use this instead of `--dir` RAG when you want to find **where** something is cal
 
 ### `ai chat` on a large open-source codebase
 
-![ai chat demo](.github/img/ai-chat-express.svg)
-
 *BFS traversal discovers `application.handle`, then `Router`, `View`, `compileETag` across 3 rounds. Source files from `lib/` fill budget before test files.*
+
+![ai chat demo](.github/img/output-explain.png)
 
 ### `ai index` — indexing a real-world project
 
-![ai index demo](.github/img/ai-index-express.svg)
+![ai chat demo](.github/img/index.png)
 
 *152 files indexed in 14.2s with concurrent workers (4) and per-file embed batching.*
 
