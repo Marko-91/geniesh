@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { embed } from '../src/embedder.js';
+import { embed, embedBatch } from '../src/embedder.js';
 
 // Mock fetch
 global.fetch = jest.fn();
@@ -7,6 +7,23 @@ global.fetch = jest.fn();
 describe('embedder', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  describe('embedBatch', () => {
+    it('should embed multiple texts in one call', async () => {
+      fetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ embeddings: [[0.1, 0.2], [0.3, 0.4]] }),
+      });
+
+      const result = await embedBatch(['text a', 'text b']);
+      expect(result).toEqual([[0.1, 0.2], [0.3, 0.4]]);
+      expect(fetch).toHaveBeenCalledWith('http://localhost:11434/api/embed', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'nomic-embed-text', input: ['text a', 'text b'] }),
+      });
+    });
   });
 
   describe('embed', () => {
@@ -22,7 +39,7 @@ describe('embedder', () => {
       expect(fetch).toHaveBeenCalledWith('http://localhost:11434/api/embed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'nomic-embed-text', input: 'test text' }),
+        body: JSON.stringify({ model: 'nomic-embed-text', input: ['test text'] }),
       });
     });
 
@@ -38,7 +55,7 @@ describe('embedder', () => {
       expect(fetch).toHaveBeenCalledWith('http://localhost:11434/api/embed', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'nomic-embed-text', input: truncated }),
+        body: JSON.stringify({ model: 'nomic-embed-text', input: [truncated] }),
       });
     });
 

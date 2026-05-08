@@ -1,13 +1,33 @@
+import { performance } from 'perf_hooks';
 import { readFile as fsReadFile, writeFile, unlink, access } from 'fs/promises';
 import { scanDir, readFile as readSourceFile } from './fs-utils.js';
 import { chunkFile } from './chunker.js';
-import { embed } from './embedder.js';
+import { embed, embedBatch } from './embedder.js';
 import { buildRelations, saveRelations } from './relations.js';
 import ora from 'ora';
 
 const INDEX_FILE = '.ai-index.json';
+const CONCURRENCY = 4; // embed N files in parallel
+
+// Simple concurrent pool — no extra deps needed
+async function concurrentMap(concurrency, items, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      results[i] = await fn(items[i], i);
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+  return results;
+}
 
 export async function buildIndex(dir) {
+  const t0 = performance.now();
+
   // Remove stale index so we always start fresh
   try {
     await unlink(INDEX_FILE);
@@ -18,53 +38,75 @@ export async function buildIndex(dir) {
 
   const scanSpinner = ora(`Scanning ${dir}…`).start();
   const files = await scanDir(dir);
-  scanSpinner.succeed(`Found ${files.length} file(s) to index`);
+  const scanMs = ((performance.now() - t0) / 1000).toFixed(1);
+  scanSpinner.succeed(`Found ${files.length} file(s) to index  (${scanMs}s)`);
 
   if (files.length === 0) {
     console.log('Nothing to index.');
     return [];
   }
 
-  const index = [];
-  let processed = 0;
-  let skipped = 0;
+  const embedStart = performance.now();
+  let done = 0;
   let totalChunks = 0;
+  const spinner = ora(`Indexing 0/${files.length} files…`).start();
 
-  for (const filePath of files) {
-    const fileSpinner = ora({ text: `Chunking  ${filePath}`, prefixText: '' }).start();
+  const results = await concurrentMap(CONCURRENCY, files, async (filePath) => {
+    const t0 = performance.now();
     try {
       const content = await readSourceFile(filePath);
       const chunks = chunkFile(filePath, content);
-      fileSpinner.text = `Embedding ${filePath}  (${chunks.length} chunk${chunks.length !== 1 ? 's' : ''})`;
 
-      for (const c of chunks) {
-        const embedding = await embed(c.chunk);
-        index.push({ file: c.file, chunk: c.chunk, startLine: c.startLine, endLine: c.endLine, embedding });
-        totalChunks++;
+      if (chunks.length === 0) {
+        done++;
+        return [];
       }
 
-      fileSpinner.succeed(`${filePath}  — ${chunks.length} chunk${chunks.length !== 1 ? 's' : ''} embedded`);
-      processed++;
+      const texts = chunks.map(c => c.chunk);
+      const embeddings = await embedBatch(texts);
+
+      const entries = chunks.map((c, i) => ({
+        file: c.file,
+        chunk: c.chunk,
+        startLine: c.startLine,
+        endLine: c.endLine,
+        embedding: embeddings[i],
+      }));
+
+      done++;
+      totalChunks += chunks.length;
+      const ms = (performance.now() - t0).toFixed(0);
+      spinner.text = `Indexing ${done}/${files.length} files  (${ms}ms · ${filePath})`;
+      return entries;
     } catch (err) {
-      fileSpinner.fail(`${filePath}  — skipped: ${err.message}`);
-      skipped++;
+      done++;
+      spinner.text = `Indexing ${done}/${files.length} files  (skipped: ${filePath} — ${err.message})`;
+      return [];
     }
-  }
+  });
 
-  const saveSpinner = ora('Saving index…').start();
+  const index = results.flat();
+  const embedSec = ((performance.now() - embedStart) / 1000).toFixed(1);
+  spinner.succeed(`Indexed ${done} files, ${totalChunks} chunks  (${embedSec}s)`);
+
+  const saveStart = performance.now();
   await saveIndex(index);
-  saveSpinner.succeed(`Index saved → ${INDEX_FILE}  (${processed} files, ${totalChunks} chunks${skipped ? `, ${skipped} skipped` : ''})`);
+  const saveMs = (performance.now() - saveStart).toFixed(0);
+  console.log(`  → Saved ${INDEX_FILE}  (${saveMs}ms)`);
 
-  const relSpinner = ora('Building relation graph…').start();
+  const relStart = performance.now();
   try {
     const relations = await buildRelations(dir);
     await saveRelations(relations);
     const symCount = Object.keys(relations.bySymbol).length;
-    relSpinner.succeed(`Relation graph saved → .ai-relations.json  (${symCount} symbols, ${files.length} files)`);
+    const relMs = (performance.now() - relStart).toFixed(0);
+    console.log(`  → Saved .ai-relations.json  (${symCount} symbols, ${relMs}ms)`);
   } catch (err) {
-    relSpinner.fail(`Relation graph skipped: ${err.message}`);
+    console.log(`  → Relation graph skipped: ${err.message}`);
   }
 
+  const totalSec = ((performance.now() - t0) / 1000).toFixed(1);
+  console.log(`  → Total: ${totalSec}s`);
   return index;
 }
 
@@ -114,31 +156,47 @@ export async function indexExists() {
 export async function buildIndexFromFileList(files) {
   if (files.length === 0) return [];
 
-  const index = [];
-  let processed = 0;
-  let skipped = 0;
+  const t0 = performance.now();
+  let done = 0;
   let totalChunks = 0;
+  const spinner = ora(`Indexing ${files.length} file(s)…`).start();
 
-  for (const filePath of files) {
-    const fileSpinner = ora({ text: `Embedding ${filePath}…` }).start();
+  const results = await concurrentMap(CONCURRENCY, files, async (filePath) => {
+    const t0 = performance.now();
     try {
       const content = await readSourceFile(filePath);
       const chunks = chunkFile(filePath, content);
 
-      for (const c of chunks) {
-        const embedding = await embed(c.chunk);
-        index.push({ file: c.file, chunk: c.chunk, startLine: c.startLine, endLine: c.endLine, embedding });
-        totalChunks++;
+      if (chunks.length === 0) {
+        done++;
+        return [];
       }
 
-      fileSpinner.succeed(`${filePath}  — ${chunks.length} chunk${chunks.length !== 1 ? 's' : ''} embedded`);
-      processed++;
-    } catch (err) {
-      fileSpinner.fail(`${filePath}  — skipped: ${err.message}`);
-      skipped++;
-    }
-  }
+      const texts = chunks.map(c => c.chunk);
+      const embeddings = await embedBatch(texts);
 
-  console.log(`\nExplicit context: ${processed} file(s), ${totalChunks} chunks${skipped ? `, ${skipped} skipped` : ''}`);
+      const entries = chunks.map((c, i) => ({
+        file: c.file,
+        chunk: c.chunk,
+        startLine: c.startLine,
+        endLine: c.endLine,
+        embedding: embeddings[i],
+      }));
+
+      done++;
+      totalChunks += chunks.length;
+      const ms = (performance.now() - t0).toFixed(0);
+      spinner.text = `Indexing ${done}/${files.length}  (${ms}ms · ${filePath})`;
+      return entries;
+    } catch (err) {
+      done++;
+      spinner.text = `Indexing ${done}/${files.length}  (skipped: ${filePath})`;
+      return [];
+    }
+  });
+
+  const index = results.flat();
+  const elapsed = ((performance.now() - t0) / 1000).toFixed(1);
+  spinner.succeed(`Indexed ${done} files, ${totalChunks} chunks  (${elapsed}s)`);
   return index;
 }

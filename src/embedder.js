@@ -9,7 +9,22 @@ const EMBED_CHAR_LIMIT = 6000;
  * @returns {Promise<number[]>}
  */
 export async function embed(text) {
-  const input = text.length > EMBED_CHAR_LIMIT ? text.slice(0, EMBED_CHAR_LIMIT) : text;
+  const [vec] = await embedBatch([text]);
+  return vec;
+}
+
+/**
+ * Generates embeddings for multiple texts in a single Ollama call.
+ * Dramatically faster than calling embed() N times (one inference run).
+ * @param {string[]} texts
+ * @param {number}   [charLimit]  Override char limit per text
+ * @returns {Promise<number[][]>}
+ */
+export async function embedBatch(texts) {
+  const input = texts.map(t =>
+    t.length > EMBED_CHAR_LIMIT ? t.slice(0, EMBED_CHAR_LIMIT) : t,
+  );
+
   let res;
   try {
     res = await fetch(`${OLLAMA_URL}/api/embed`, {
@@ -32,5 +47,5 @@ export async function embed(text) {
   if (!data?.embeddings?.length) {
     throw new Error('Ollama returned empty embedding response');
   }
-  return data.embeddings[0];
+  return data.embeddings;
 }

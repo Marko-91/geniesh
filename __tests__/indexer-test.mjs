@@ -3,7 +3,7 @@ import { buildIndex, loadIndex, saveIndex, indexExists, buildIndexFromFileList }
 import { readFile as fsReadFile, writeFile, unlink, access } from 'fs/promises';
 import { scanDir, readFile as readSourceFile } from '../src/fs-utils.js';
 import { chunkFile } from '../src/chunker.js';
-import { embed } from '../src/embedder.js';
+import { embed, embedBatch } from '../src/embedder.js';
 
 // Mock dependencies
 jest.mock('fs/promises', () => ({
@@ -21,6 +21,7 @@ jest.mock('../src/chunker.js', () => ({
 }));
 jest.mock('../src/embedder.js', () => ({
   embed: jest.fn(),
+  embedBatch: jest.fn(),
 }));
 jest.mock('ora', () => ({
   __esModule: true,
@@ -45,16 +46,17 @@ describe('indexer', () => {
         { file: 'file1.js', chunk: 'chunk1', startLine: 1, endLine: 10 },
         { file: 'file1.js', chunk: 'chunk2', startLine: 11, endLine: 20 },
       ]);
-      embed.mockResolvedValue([0.1, 0.2]);
+      embedBatch.mockResolvedValue([[0.1, 0.2], [0.3, 0.4]]);
       unlink.mockResolvedValue();
 
       const result = await buildIndex('/test');
       expect(result).toEqual([
         { file: 'file1.js', chunk: 'chunk1', startLine: 1, endLine: 10, embedding: [0.1, 0.2] },
-        { file: 'file1.js', chunk: 'chunk2', startLine: 11, endLine: 20, embedding: [0.1, 0.2] },
+        { file: 'file1.js', chunk: 'chunk2', startLine: 11, endLine: 20, embedding: [0.3, 0.4] },
       ]);
       expect(scanDir).toHaveBeenCalledWith('/test');
-      expect(embed).toHaveBeenCalledTimes(2);
+      expect(embedBatch).toHaveBeenCalledTimes(1);
+      expect(embedBatch).toHaveBeenCalledWith(['chunk1', 'chunk2']);
     });
 
     it('should handle empty directory', async () => {
@@ -116,7 +118,7 @@ describe('indexer', () => {
       const files = ['file1.js'];
       readSourceFile.mockResolvedValue('content');
       chunkFile.mockReturnValue([{ file: 'file1.js', chunk: 'chunk', startLine: 1, endLine: 10 }]);
-      embed.mockResolvedValue([0.1]);
+      embedBatch.mockResolvedValue([[0.1]]);
 
       const result = await buildIndexFromFileList(files);
       expect(result).toEqual([{ file: 'file1.js', chunk: 'chunk', startLine: 1, endLine: 10, embedding: [0.1] }]);
