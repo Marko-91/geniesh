@@ -7,6 +7,8 @@ const IGNORED_DIRS = new Set([
   'coverage', '__pycache__', 'venv', '.venv', 'vendor', '.cache'
 ]);
 
+const ALLOWED_DOT_DIRS = new Set(['.github']);
+
 const SUPPORTED_EXTS = new Set([
   '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',
   '.py', '.go', '.rs', '.java', '.cpp', '.c', '.h',
@@ -37,7 +39,7 @@ export async function scanDir(dir) {
     for (const entry of entries) {
       const fullPath = join(current, entry.name);
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name) && !entry.name.startsWith('.')) {
+        if (!IGNORED_DIRS.has(entry.name) && (!entry.name.startsWith('.') || ALLOWED_DOT_DIRS.has(entry.name))) {
           await walk(fullPath);
         }
       } else if (

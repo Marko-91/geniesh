@@ -12,8 +12,8 @@ const RAG_TOP_FILES      = 12;    // max files from RAG to prioritize for grep
 
 // Priority-1 filenames (loaded first, regardless of score)
 const PRIORITY_NAMES = new Set([
-  'readme.md', 'contributing.md', 'architecture.md', 'overview.md',
-  'guide.md', 'docs.md', 'api.md', 'changelog.md',
+  'readme.md', 'changelog.md', 'contributing.md', 'license',
+  'instructions.md', // .github/instructions.md — project conventions
 ]);
 
 // ─── Symbol extraction ──────────────────────────────────────────────────────────
