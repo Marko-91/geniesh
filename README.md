@@ -102,7 +102,7 @@ Each message triggers a two-tier context pipeline:
 
 During context building, the depth log is printed in grey:
 ```
-  [depth 0] grepping: savePortfolioIQFields, itemTypeUtil
+  [depth 0] grepping: methodName, itemTypeUtil
   [depth 0] added 3 window(s), budget used: 4120/10000
   [depth 0→1] discovered: piq, apiResponse, integrationId
   [depth 1] grepping: piq, apiResponse, integrationId
@@ -110,7 +110,7 @@ During context building, the depth log is printed in grey:
 ```
 
 ```
-You: how does savePortfolioIQFields work?
+You: how does methodName work?
 Assistant: ...
 
 You: exit
