@@ -3,7 +3,10 @@
 import { Command } from 'commander';
 import { createInterface } from 'readline';
 import { basename } from 'path';
+import { createRequire } from 'module';
 import { readFile } from './fs-utils.js';
+const require = createRequire(import.meta.url);
+const { version } = require('../package.json');
 import { extractFunction } from './extractor.js';
 import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './indexer.js';
 import { loadRelations, relationsExist } from './relations.js';
@@ -24,7 +27,7 @@ await checkOllamaHealth();
 program
   .name('geniesh')
   .description('Local AI developer assistant — BFS relation-graph + RAG (powered by Ollama)')
-  .version('1.0.0')
+  .version(version)
   .enablePositionalOptions()
   .option('--model <name>', 'Ollama model to use', 'qwen3-coder')
   .hook('preAction', (thisCommand) => {
@@ -205,14 +208,25 @@ program
     }
   });
 
-// ─── ai "<query>" --file / --fn / --dir ──────────────────────────────────────
+// ─── geniesh "<query>" --file / --fn / --dir ─────────────────────────────────
 
 program
-  .argument('<query>', 'What to ask the AI about your code')
+  .argument('[query]', 'What to ask the AI about your code')
   .option('--file <path>', 'Analyze a specific file')
   .option('--fn <name>',   'Extract and analyze a specific function (requires --file)')
   .option('--dir <path>',  'Use RAG over an indexed directory')
   .action(async (query, opts) => {
+    if (!query && !opts.file && !opts.dir) {
+      console.log('');
+      console.log(`  \x1b[1;36m🧞  geniesh\x1b[0m  \x1b[90mv${version}\x1b[0m`);
+      console.log('  \x1b[90mYour code genie is out of the bottle.\x1b[0m');
+      console.log('');
+      console.log('  \x1b[90m  geniesh chat\x1b[0m       \x1b[90mExplore any codebase hands-free\x1b[0m');
+      console.log('  \x1b[90m  geniesh "fix this"\x1b[0m  \x1b[90m--file src/app.js  One-shot analysis\x1b[0m');
+      console.log('  \x1b[90m  geniesh --help\x1b[0m     \x1b[90mSee all commands\x1b[0m');
+      console.log('');
+      return;
+    }
     try {
       let prompt;
 

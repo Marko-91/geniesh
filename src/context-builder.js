@@ -195,17 +195,52 @@ export async function buildChatContext(question, index, allFiles, relations, fil
   // ── Tier 1: relation-guided BFS (budget-limited) ──────────────────────────
   let seedSymbols = extractSymbols(question);
 
-  const ragScored = await search(question, index, RAG_TOP_K);
-  const ragFiles = [...new Set(ragScored.map(c => c.file))].slice(0, RAG_TOP_FILES);
+  // Try RAG if index is available, otherwise fall back to grep-bootstrap
+  let ragScored = [];
+  let ragFiles = [];
+  let useGrepBootstrap = false;
+
+  if (index && index.length > 0) {
+    try {
+      ragScored = await search(question, index, RAG_TOP_K);
+      ragFiles = [...new Set(ragScored.map(c => c.file))].slice(0, RAG_TOP_FILES);
+    } catch {
+      useGrepBootstrap = true;
+    }
+  } else {
+    useGrepBootstrap = true;
+  }
 
   // If question has no code symbols, seed BFS from symbols in top RAG chunks
+  // or via grep-bootstrap (no embedding index needed)
   if (seedSymbols.length === 0 && relations) {
-    const ragSymbols = new Set();
-    for (const c of ragScored.slice(0, 3)) {
-      const fileSyms = relations.byFile[c.file];
-      if (fileSyms) fileSyms.forEach(s => ragSymbols.add(s));
+    if (ragScored.length > 0) {
+      const ragSymbols = new Set();
+      for (const c of ragScored.slice(0, 3)) {
+        const fileSyms = relations.byFile[c.file];
+        if (fileSyms) fileSyms.forEach(s => ragSymbols.add(s.name || s));
+      }
+      seedSymbols = [...ragSymbols].slice(0, 6);
+    } else if (useGrepBootstrap) {
+      // Grep meaningful query words across all files to find seed symbols
+      const queryWords = question.split(/\s+/)
+        .filter(w => w.length > 3)
+        .filter(w => !/^[A-Z][a-z]{2,}$/.test(w) && !/[A-Z]{2,}/.test(w)) // skip PascalCase/ALL_CAPS (already in symbols)
+        .slice(0, 4);
+      if (queryWords.length > 0) {
+        const grepSeedSymbols = new Set();
+        for (const word of queryWords) {
+          try {
+            const results = await grepFiles(word, allFiles, 5);
+            for (const r of results) {
+              const fileSyms = relations.byFile[r.file];
+              if (fileSyms) fileSyms.forEach(s => grepSeedSymbols.add(s.name || s));
+            }
+          } catch { continue; }
+        }
+        seedSymbols = [...grepSeedSymbols].slice(0, 6);
+      }
     }
-    seedSymbols = [...ragSymbols].slice(0, 6);
   }
 
   let frontier = seedSymbols;
@@ -292,21 +327,25 @@ export async function buildChatContext(question, index, allFiles, relations, fil
       for (const file of hitFiles) {
         const fileSymbols = relations.byFile[file];
         if (!fileSymbols) continue;
-        for (const sym of fileSymbols) {
+        for (const entry of fileSymbols) {
+          const sym = entry.name || entry;
           if (!seenSymbols.has(sym) && !newSymbols.includes(sym)) {
             newSymbols.push(sym);
           }
         }
         // BFS across related files: discover new files through symbol overlap
-        for (const sym of fileSymbols) {
+        for (const entry of fileSymbols) {
+          const sym = entry.name || entry;
           const symFiles = relations.bySymbol[sym];
           if (!symFiles) continue;
-          for (const relatedFile of symFiles) {
+          for (const ref of symFiles) {
+            const relatedFile = ref.file || ref;
             if (seenFiles.has(relatedFile) || seenRelFiles.has(relatedFile)) continue;
             seenRelFiles.add(relatedFile);
             const relatedSyms = relations.byFile[relatedFile];
             if (!relatedSyms) continue;
-            for (const rsym of relatedSyms) {
+            for (const rentry of relatedSyms) {
+              const rsym = rentry.name || rentry;
               if (!seenSymbols.has(rsym) && !newSymbols.includes(rsym)) {
                 newSymbols.push(rsym);
               }
@@ -314,6 +353,20 @@ export async function buildChatContext(question, index, allFiles, relations, fil
           }
         }
       }
+
+      // Prioritize: exported > class > function > variable > reference
+      const kindOrder = { class: 0, function: 1, variable: 2, reference: 3 };
+      const symbolPriority = (name) => {
+        const metas = relations.bySymbol[name];
+        if (!metas || metas.length === 0) return 999;
+        const m = metas[0];
+        const exportPenalty = m.exported ? 0 : 100;
+        const kindPenalty = kindOrder[m.kind] ?? 99;
+        return exportPenalty + kindPenalty;
+      };
+
+      newSymbols.sort((a, b) => symbolPriority(a) - symbolPriority(b));
+
       const MAX_FRONTIER = 20;
       const truncated = newSymbols.slice(0, MAX_FRONTIER);
       if (newSymbols.length > 0) {

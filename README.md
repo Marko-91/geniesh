@@ -115,7 +115,7 @@ If no `.ai-index.json` exists in the current directory, the index is built autom
 Each message triggers a two-tier context pipeline:
 
 1. **BFS relation-graph traversal (budget-limited)**  
-   Code symbols are extracted from your question (`camelCase`, `PascalCase`, `snake_case`, `ALL_CAPS`, `dotted.paths`). These seed a breadth-first search over a pre-built **symbol relation graph** (`.ai-relations.json`) that maps every symbol to the files it appears in and every file to the symbols it contains. At each round, symbols are grepped to retrieve code windows, and the relation graph reveals new symbols from the same files — no re-grepping needed. The BFS continues until the 10,000-character context budget is exhausted (frontier capped at 20 symbols per round). If the question has no code symbols, the BFS is seeded from the top RAG chunks instead.
+   Code symbols are extracted from your question (`camelCase`, `PascalCase`, `snake_case`, `ALL_CAPS`, `dotted.paths`). These seed a breadth-first search over a pre-built **symbol relation graph** (`.ai-relations.json`) that maps every symbol to the files it appears in and every file to the symbols it contains. Each symbol carries **metadata** — its kind (`class`, `function`, `variable`, `reference`), whether it's **exported**, and its **line range** in the source file. At each round, symbols are grepped to retrieve code windows, and the relation graph reveals new symbols from the same files — no re-grepping needed. New symbols are sorted by priority: exported symbols first, then class > function > variable > reference. The BFS continues until the 10,000-character context budget is exhausted (frontier capped at 20 symbols per round). If the question has no code symbols, the BFS is seeded from the top RAG chunks instead.
 
 2. **RAG (remaining budget)**  
    Cosine similarity search fills any remaining context budget, with README and `.md` files prioritised.
@@ -209,12 +209,16 @@ Indexing pipeline:
   scan dir → skip .min.js/.min.css → chunk (150 lines, 50-line overlap)
            → embed each chunk (nomic-embed-text, truncated to 6000 chars)
            → save to .ai-index.json
+           → build relation graph with symbol metadata (kind, exported, lineRange)
+           → incremental merge: only re-scan files whose hash (mtime+size) changed
+           → prune stale symbols and files → save to .ai-relations.json
 
 Chat context pipeline (per turn):
   extract symbols from question (camelCase/PascalCase/snake_case/ALL_CAPS/dotted)
     → seed BFS from question symbols (or top RAG chunks if none found)
     → for each round: grep symbols → retrieve code windows
     → discover new symbols via pre-built relation graph (no re-grepping)
+    → prioritize: exported > class > function > variable > reference
     → repeat until budget exhausted (frontier ≤ 20)
     → fill remaining budget with RAG (cosine similarity, MD files first)
     → inject as context prefix to LLM message
@@ -270,7 +274,7 @@ If you want to contribute, don't write code. Write tests. Then make them pass.
 ## Notes
 
 - `.ai-index.json` and `.ai-relations.json` are excluded from git by default.
-- Re-run `geniesh index` whenever your codebase changes significantly.
+- The `.ai-relations.json` graph persists across sessions. Re-running `geniesh index` performs an **incremental merge** — only files whose content changed (detected by mtime+size hash) are re-scanned, and stale symbols are pruned. A fresh build happens when no previous graph exists.
 - Ollama must be running (`ollama serve`) before using any command.
 - Context budget is capped at 10,000 characters per turn.
 - Minified files (`.min.js`, `.min.css`) are automatically skipped during indexing.
