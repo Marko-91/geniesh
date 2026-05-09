@@ -35,3 +35,5 @@
 /.jest-test-results.json
 
 credentials/*
+
+.reports
