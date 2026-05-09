@@ -6,6 +6,7 @@ import { readFile } from './fs-utils.js';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const CONTEXT_BUDGET     = 10000; // max chars of code context per turn
+const ROUND_0_CAP        = Math.floor(CONTEXT_BUDGET * 0.7); // reserve 30% for rounds ≥1
 const MAX_CHAT_TURNS     = 8;     // sliding window: keep last N user/assistant pairs
 const RAG_TOP_K          = 8;     // cosine candidates to consider
 const GREP_CONTEXT_LINES = 15;    // lines around each grep match
@@ -23,7 +24,7 @@ const PRIORITY_NAMES = new Set([
 
 // ─── Index sorting ──────────────────────────────────────────────────────────────
 const HIGH_PRIORITY_DIRS = /[/\\](src|lib|app|core|include|packages)[/\\]/;
-const LOW_PRIORITY_DIRS  = /[/\\](test|spec|__tests__|__mocks__|fixtures|examples)[/\\]/;
+const LOW_PRIORITY_DIRS  = /^|[/\\](test|spec|__tests__|__mocks__|fixtures|examples)[/\\]/;
 
 function fileTier(filePath) {
   const name = basename(filePath).toLowerCase();
@@ -249,6 +250,8 @@ export async function buildChatContext(question, index, allFiles, relations, fil
   let bfsRound = 0;
 
   while (used < budget && frontier.length > 0) {
+    const roundCap = bfsRound === 0 ? Math.min(ROUND_0_CAP, budget) : budget;
+    if (used >= roundCap) break;
     const toGrep = frontier.filter(s => !seenSymbols.has(s));
     if (toGrep.length === 0) break;
 
@@ -257,8 +260,11 @@ export async function buildChatContext(question, index, allFiles, relations, fil
     const hitFiles = []; // files that matched this round — for relation lookup
     let hitsThisRound = 0;
 
+    // Phase 1: collect all (sym, file, windows) groups across all symbols
+    const groups = []; // { sym, file, windows, taken }
+
     for (const sym of toGrep) {
-      if (used >= budget) break;
+      if (used >= roundCap) break;
       seenSymbols.add(sym);
 
       let results;
@@ -278,7 +284,6 @@ export async function buildChatContext(question, index, allFiles, relations, fil
         const segResults = [];
         for (const segment of sym.split('.')) {
           if (segment.length < 2) continue;
-          if (used >= budget) break;
           try {
             let r = await grepFiles(segment, ragFiles, GREP_CONTEXT_LINES, bfsRound);
             if (r.length === 0) {
@@ -289,32 +294,41 @@ export async function buildChatContext(question, index, allFiles, relations, fil
             continue;
           }
         }
-        // Insert segment results BEFORE literal results so they are
-        // added to context first (dir priority also helps).
         results = [...segResults, ...results];
       }
 
-      // Sort: source dirs first, test dirs last — so implementation
-      // windows fill budget before test-noise
-      results.sort((a, b) => dirScore(a.file) - dirScore(b.file));
-
       for (const { file, windows } of results) {
-        if (!seenFiles.has(file)) {
-          seenFiles.add(file);
-          hitFiles.push(file);
+        groups.push({ sym, file, windows, taken: 0 });
+      }
+    }
+
+    // Sort groups by directory priority (source dirs first, test dirs last)
+    groups.sort((a, b) => dirScore(a.file) - dirScore(b.file));
+
+    // Phase 2: round-robin across groups — one window per group per cycle
+    let anyAdded = true;
+    while (used < roundCap && anyAdded) {
+      anyAdded = false;
+      for (const group of groups) {
+        if (used >= roundCap) break;
+        if (group.taken >= group.windows.length) continue;
+
+        const win = group.windows[group.taken++];
+
+        if (!seenFiles.has(group.file)) {
+          seenFiles.add(group.file);
+          hitFiles.push(group.file);
         }
-        for (const win of windows) {
-          const metadata = {
-            method: `bfs-${bfsRound}`,
-            symbol: sym,
-            hitCount: win.metadata?.hitCount || 1,
-          };
-          if (tryAdd(file, win.startLine, win.endLine, win.text, `${file} [${sym}]`, metadata)) {
-            hitsThisRound++;
-          }
-          if (used >= budget) break;
+
+        const metadata = {
+          method: `bfs-${bfsRound}`,
+          symbol: group.sym,
+          hitCount: win.metadata?.hitCount || 1,
+        };
+        if (tryAdd(group.file, win.startLine, win.endLine, win.text, `${group.file} [${group.sym}]`, metadata)) {
+          anyAdded = true;
+          hitsThisRound++;
         }
-        if (used >= budget) break;
       }
     }
 

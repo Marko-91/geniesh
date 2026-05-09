@@ -12,7 +12,8 @@ const ALLOWED_DOT_DIRS = new Set(['.github']);
 const SUPPORTED_EXTS = new Set([
   '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',
   '.py', '.go', '.rs', '.java', '.cpp', '.c', '.h',
-  '.rb', '.md', '.sh', '.sql', '.yaml', '.yml', '.json', '.php'
+  '.rb', '.md', '.sh', '.sql', '.yaml', '.yml', '.json', '.php',
+  '.lisp', '.lsp', '.cl',
 ]);
 
 const IGNORED_EXTS = new Set([
@@ -65,6 +66,7 @@ const FILE_REF_EXTS = new Set([
   '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',
   '.py', '.go', '.rs', '.java', '.rb', '.php',
   '.yml', '.yaml', '.json', '.md', '.sh',
+  '.lisp', '.lsp', '.cl',
 ]);
 
 /**

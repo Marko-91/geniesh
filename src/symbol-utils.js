@@ -3,9 +3,10 @@ const SYMBOL_RE = new RegExp(
   '[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*' +
   '|[A-Z][a-z]+(?:[A-Z][a-z0-9]+)+' +
   '|[a-z][a-z0-9]+_[a-z][a-z0-9_]+' +
+  '|[a-z][a-z0-9]+(?:-[a-z][a-z0-9]+)+' +  // kebab-case
   '|[a-z][a-z0-9]+(?:\\.[a-z][a-z0-9]+)+' +
   '|[A-Z][a-z]+[a-zA-Z0-9]*(?:\\.[a-zA-Z_$][a-zA-Z0-9_$]*)+' +
-  '|[A-Z][a-z]{3,}' +
+  '|[A-Z][a-z]{2,}' +
   '|[A-Z]{2,}(?:_[A-Z0-9]+)+' +
   ')\\b',
   'g',
@@ -49,7 +50,7 @@ function findSymbolKind(line, name) {
 
 function isExported(line, name) {
   const n = escapeRegex(name);
-  if (/\bexport\b/.test(line)) return true;
+  if (/^\s*export\s/.test(line)) return true;
   if (new RegExp(`module\\.exports\\.${n}\\b`).test(line)) return true;
   if (new RegExp(`module\\.exports\\s*=\\s*\\{`).test(line)) return true;
   if (new RegExp(`exports\\.${n}\\b`).test(line)) return true;
