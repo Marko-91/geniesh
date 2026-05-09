@@ -19,8 +19,13 @@ This file defines the conventions, preferences, and workflows for developing and
 - Async/await over raw promises.
 - Use the `readFile` wrapper from `fs-utils.js` instead of raw `fs/promises` when reading source files.
 
-## Commit Style
+## Commit Style & Versioning
 
+- All PRs and multi-commit branches **must be squash-merged** into `main`.
+- Every push to `main` **must bump the version** in `package.json` following semver:
+  - `feat:` → minor bump (`1.2.0 → 1.3.0`)
+  - `fix:` → patch bump (`1.2.0 → 1.2.1`)
+  - `BREAKING CHANGE` or major refactor → major bump (`1.2.0 → 2.0.0`)
 - Use [Conventional Commits](https://www.conventionalcommits.org/): `type(scope): description`
   - `feat:` — new capability
   - `fix:` — bug fix
@@ -28,7 +33,7 @@ This file defines the conventions, preferences, and workflows for developing and
   - `docs:` — documentation only
   - `test:` — test additions/fixes
   - `chore:` — tooling, CI, dependencies
-- Keep commits focused: one logical change per commit.
+- The squash commit message becomes the single canonical entry for that change-set.
 - Write commit messages that explain *why* (not just *what*).
 
 ## Documentation

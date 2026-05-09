@@ -49,6 +49,24 @@ geniesh refs validateToken --dir src/ --explain
 
 That's it. No config files, no API keys, no data leaving your machine.
 
+## Release Process
+
+Every push to `main` is a release. We squash-merge feature branches and bump the version following semver:
+
+```bash
+# Squash your branch, then bump and push
+npm version major   # breaking changes
+npm version minor   # new features
+npm version patch   # bug fixes
+
+git push origin main --tags
+```
+
+- PRs and multi-commit branches **must be squash-merged** — one canonical commit per change-set.
+- Commit messages use [Conventional Commits](https://www.conventionalcommits.org/):
+  `feat:` → minor, `fix:` → patch, `BREAKING CHANGE` → major.
+- The squash commit message becomes the single entry for that change.
+
 ## Commands
 
 ### `geniesh index --dir <path>`
