@@ -14,6 +14,7 @@ const SUPPORTED_EXTS = new Set([
   '.py', '.go', '.rs', '.java', '.cpp', '.c', '.h',
   '.rb', '.md', '.sh', '.sql', '.yaml', '.yml', '.json', '.php',
   '.lisp', '.lsp', '.cl',
+  '.cs', '.fs', '.fsx', '.vb',
 ]);
 
 const IGNORED_EXTS = new Set([
@@ -67,6 +68,7 @@ const FILE_REF_EXTS = new Set([
   '.py', '.go', '.rs', '.java', '.rb', '.php',
   '.yml', '.yaml', '.json', '.md', '.sh',
   '.lisp', '.lsp', '.cl',
+  '.cs', '.fs', '.fsx', '.vb',
 ]);
 
 /**

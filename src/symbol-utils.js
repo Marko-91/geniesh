@@ -22,6 +22,48 @@ const DISCOVERY_RE = new RegExp(
 
 const DOMAIN_RE = /\.(com|net|org|io|co|php|js|ts|html|css|json|md|txt|edu|gov|app|dev)(\.|$)/i;
 
+// English words that match PascalCase patterns but are never real code symbols.
+const ENGLISH_NOISE_SYMS = new Set([
+  'the','you','this','that','these','those','how','show','what','why','when',
+  'where','which','who','are','was','but','not','from','with','they','them',
+  'their','your','our','its','has','had','may','can','will','would','could',
+  'should','shall','into','about','also','very','just','over','under','here',
+  'there','then','else','still','already','more','most','other','each','every',
+  'both','few','much','many','some','once','ever','again','upon','down','off',
+  'near','red','see','old','out','than','thus','hence','while','after','before',
+  'above','below','across','along','among','around','behind','beneath','beside',
+  'between','beyond','during','except','inside','outside','since','through',
+  'toward','within','without','having','doing','being','going','coming','making',
+  'taking','giving','using','finding','keeping','looking','asking','telling',
+  'working','calling','thinking','knowing','becoming','beginning','holding',
+  'keeping','leaving','meaning','meeting','running','saying','seeing','selling',
+  'sending','showing','sitting','speaking','standing','starting','stopping',
+  'taking','teaching','telling','thinking','trying','turning','understanding',
+  'using','waiting','walking','wanting','watching','working','writing',
+  'begin','began','begun','hold','held','keep','kept','lay','laid','lie','lay',
+  'rise','rose','risen','sit','sat','stand','stood','leave','left','mean','meant',
+  'bring','brought','buy','bought','catch','caught','choose','chose','chosen',
+  'come','came','do','did','done','draw','drew','drawn','drink','drank','drunk',
+  'drive','drove','driven','eat','ate','eaten','fall','fell','fallen','feel',
+  'felt','fight','fought','find','found','fly','flew','flown','forget','forgot',
+  'forgiven','freeze','froze','frozen','give','gave','given','go','went','gone',
+  'grow','grew','grown','hide','hid','hidden','hurt','know','knew','known',
+  'lead','led','lend','lent','let','let','lose','lost','make','made','pay',
+  'paid','put','read','ride','rode','ridden','ring','rang','rung','rise','rose',
+  'run','ran','say','said','sell','sold','shake','shook','shaken','shine',
+  'shone','shoot','shot','shut','shut','sing','sang','sung','sink','sank',
+  'sunk','sleep','slept','speak','spoke','spoken','spend','spent','steal',
+  'stole','stolen','stick','stuck','strike','struck','swear','swore','sworn',
+  'sweep','swept','swim','swam','swum','swing','swung','take','took','taken',
+  'teach','taught','tear','tore','torn','tell','told','think','thought',
+  'throw','threw','thrown','understand','understood','wake','woke','woken',
+  'wear','wore','worn','weep','wept','win','won','write','wrote','written',
+]);
+
+function isEnglishNoise(name) {
+  return ENGLISH_NOISE_SYMS.has(name.toLowerCase());
+}
+
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -80,13 +122,13 @@ function guessLineRange(lines, matchLine, kind) {
 export function extractSymbols(text) {
   const raw = [...text.matchAll(SYMBOL_RE)].map(m => m[1]);
   return [...new Set(raw)]
-    .filter(s => !DOMAIN_RE.test(s))
+    .filter(s => !DOMAIN_RE.test(s) && !isEnglishNoise(s))
     .slice(0, 6);
 }
 
 export function extractAllSymbols(text) {
   const raw = [...text.matchAll(SYMBOL_RE)].map(m => m[1]);
-  return [...new Set(raw)].filter(s => !DOMAIN_RE.test(s));
+  return [...new Set(raw)].filter(s => !DOMAIN_RE.test(s) && !isEnglishNoise(s));
 }
 
 export function extractAllSymbolsWithMetadata(content) {
@@ -101,7 +143,7 @@ export function extractAllSymbolsWithMetadata(content) {
 
     for (const m of matches) {
       const name = m[1];
-      if (seen.has(name) || DOMAIN_RE.test(name)) continue;
+      if (seen.has(name) || DOMAIN_RE.test(name) || isEnglishNoise(name)) continue;
       seen.add(name);
 
       const kind = findSymbolKind(line, name);

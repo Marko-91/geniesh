@@ -22,6 +22,98 @@ const PRIORITY_NAMES = new Set([
 // Imported from symbol-utils.js:
 //   extractSymbols()          — broad extraction for user questions
 
+// ─── English word noise filter ────────────────────────────────────────────────────
+// PascalCase words that are common English → almost never real code symbols
+const ENGLISH_PASCAL_NOISE = new Set([
+  'the','you','this','that','these','those','are','was','but','can','from',
+  'how','show','what','why','when','where','which','who','whom','whose',
+  'into','about','also','very','just','over','under','here','there','then',
+  'else','still','already','more','most','other','each','every','both','few',
+  'much','many','some','once','ever','again','upon','down','off','near',
+  'red','see','old','out','its','has','had','may','will','would','could',
+  'should','shall','than','thus','hence','thence','then','till','until',
+  'while','after','before','above','below','across','along','among',
+  'around','behind','beneath','beside','between','beyond','during',
+  'except','inside','outside','since','through','toward','towards',
+  'within','without','having','doing','being','going','coming','making',
+  'taking','giving','using','finding','keeping','letting','looking',
+  'asking','telling','working','calling','thinking','knowing','seeming',
+  'become','became','begin','began','beginning','hold','held','hold',
+  'keep','kept','lay','laid','lie','lay','lying','rise','rose','rising',
+  'set','setting','sit','sat','sitting','stand','stood','standing',
+  'leave','left','mean','meant','meeting','running','bringing',
+  'buying','catching','choosing','coming','doing','drawing','drinking',
+  'driving','eating','falling','feeling','fighting','finding','flying',
+  'forgetting','forgiving','freezing','getting','giving','going','growing',
+  'hiding','holding','hurting','keeping','knowing','leading','leaving',
+  'lending','letting','lying','losing','making','meaning','meeting',
+  'paying','putting','reading','riding','ringing','rising','running',
+  'saying','seeing','selling','sending','shaking','shining','shooting',
+  'showing','shutting','singing','sinking','sitting','sleeping','speaking',
+  'spending','standing','stealing','sticking','striking','swearing',
+  'sweeping','swimming','swinging','taking','teaching','tearing','telling',
+  'thinking','throwing','understanding','waking','wearing','weeping',
+  'winning','writing','wrote','written',
+]);
+
+// ─── Query-aware scoring ────────────────────────────────────────────────────────
+const QUERY_STOP_WORDS = new Set([
+  'the','this','that','these','those','and','for','are','was','but','not','with',
+  'from','how','what','why','when','where','which','who','is','it','to','in','of',
+  'a','an','at','by','on','or','as','be','do','has','had','its','can','may','will',
+  'would','could','should','shall','add','look','show','want','need','use','get',
+  'set','run','put','try','new','now','all','any','out','old','let','too','top',
+  'key','end','log','map','see','say','ask','tell','find','make','take','know',
+  'think','give','work','call','come','go','have','done','said','got','much',
+  'many','some','every','each','both','few','more','most','other','into','upon',
+  'over','under','between','through','during','before','after','above','below',
+  'up','down','off','near','here','there','then','else','also','very','just',
+  'about','always','never','often','once','ever','again','still','already',
+  'please','please','help','could','would','should','must','might','shall',
+]);
+
+function extractQueryTerms(question) {
+  const raw = question.split(/[\s,.;:!?(){}[\]"'/=+*&|^~`@#$%]+/);
+  return [...new Set(raw)]
+    .map(w => w.replace(/^['"]+|['"]+$/g, ''))
+    .filter(w => w.length >= 3 && !QUERY_STOP_WORDS.has(w.toLowerCase()))
+    .map(w => w.toLowerCase());
+}
+
+function queryRelevanceScore(symbol, queryTerms) {
+  if (queryTerms.length === 0) return 0;
+  const symLower = symbol.toLowerCase();
+  // Exact match with a query term → highest
+  for (const qt of queryTerms) {
+    if (qt === symLower) return 1000;
+  }
+  // Symbol starts with a query term (e.g. query "Stats" → symbol "StatsOnly")
+  for (const qt of queryTerms) {
+    if (qt.length >= 3 && symLower.startsWith(qt)) return 800;
+  }
+  // Symbol contains a query term as substring
+  for (const qt of queryTerms) {
+    if (qt.length >= 3 && symLower.includes(qt)) return 600;
+  }
+  // Query term contains symbol (e.g. symbol "Mode" → query "SearchMode")
+  for (const qt of queryTerms) {
+    if (symLower.length >= 3 && qt.includes(symLower)) return 400;
+  }
+  // CamelCase decomposition match
+  const parts = symbol.split(/(?=[A-Z])/).map(p => p.toLowerCase()).filter(p => p.length >= 2);
+  for (const qt of queryTerms) {
+    for (const part of parts) {
+      if (qt === part) return 300;
+    }
+  }
+  // Exact match after stripping common prefixes (is_, has_, to_, set_)
+  const stripped = symLower.replace(/^(is|has|to|set|get|with|from|as)_/, '');
+  for (const qt of queryTerms) {
+    if (qt === stripped) return 200;
+  }
+  return 0;
+}
+
 // ─── Index sorting ──────────────────────────────────────────────────────────────
 const HIGH_PRIORITY_DIRS = /[/\\](src|lib|app|core|include|packages)[/\\]/;
 const LOW_PRIORITY_DIRS  = /^|[/\\](test|spec|__tests__|__mocks__|fixtures|examples)[/\\]/;
@@ -196,6 +288,15 @@ export async function buildChatContext(question, index, allFiles, relations, fil
   // ── Tier 1: relation-guided BFS (budget-limited) ──────────────────────────
   let seedSymbols = extractSymbols(question);
 
+  // Filter out symbols that are common English words masquerading as PascalCase
+  seedSymbols = seedSymbols.filter(s => !ENGLISH_PASCAL_NOISE.has(s.toLowerCase()));
+
+  // Filter out symbols that don't exist in the relation graph (natural language noise)
+  if (relations && seedSymbols.length > 0) {
+    const knownSymbols = new Set(Object.keys(relations.bySymbol));
+    seedSymbols = seedSymbols.filter(s => knownSymbols.has(s));
+  }
+
   // Try RAG if index is available, otherwise fall back to grep-bootstrap
   let ragScored = [];
   let ragFiles = [];
@@ -368,15 +469,17 @@ export async function buildChatContext(question, index, allFiles, relations, fil
         }
       }
 
-      // Prioritize: exported > class > function > variable > reference
+      // Query-aware scoring: symbols matching query terms get highest priority
+      // Then exported, then by kind (class > function > variable > reference)
       const kindOrder = { class: 0, function: 1, variable: 2, reference: 3 };
+      const queryTerms = extractQueryTerms(question);
       const symbolPriority = (name) => {
         const metas = relations.bySymbol[name];
-        if (!metas || metas.length === 0) return 999;
+        if (!metas || metas.length === 0) return 99999;
         const m = metas[0];
-        const exportPenalty = m.exported ? 0 : 100;
-        const kindPenalty = kindOrder[m.kind] ?? 99;
-        return exportPenalty + kindPenalty;
+        const qScore = queryRelevanceScore(name, queryTerms);
+        // query score dominates (weight 1e6), then exported (1e5), then kind (1e3)
+        return -qScore * 1000000 + (m.exported ? 0 : 100000) + (kindOrder[m.kind] ?? 99) * 1000;
       };
 
       newSymbols.sort((a, b) => symbolPriority(a) - symbolPriority(b));
