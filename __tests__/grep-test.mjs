@@ -1,11 +1,12 @@
 import { jest } from '@jest/globals';
-import { grepFiles, formatGrepResults, buildGrepContext, escapeRegex, countBraces, findScopeHeader, findScopeEnd, getScopeWindow } from '../src/grep.js';
-import { readFile } from '../src/fs-utils.js';
+import { grepFiles, formatGrepResults, buildGrepContext } from '../src/grep.js';
 
-// Mock fs-utils
-jest.mock('../src/fs-utils.js', () => ({
+// Mock kernel fs-utils (grepFiles lives in packages/kernel)
+jest.mock('../packages/kernel/src/fs-utils.js', () => ({
   readFile: jest.fn(),
 }));
+
+import { readFile } from '../packages/kernel/src/fs-utils.js';
 
 describe('grep', () => {
   beforeEach(() => {

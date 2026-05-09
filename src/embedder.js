@@ -2,6 +2,10 @@ const OLLAMA_URL = process.env.OLLAMA_URL || 'http://localhost:11434';
 
 // nomic-embed-text context limit ~8192 tokens; ~4 chars/token → 6000 char safe limit
 const EMBED_CHAR_LIMIT = 6000;
+let _embedder = process.env.EMBEDDER || 'nomic-embed-text';
+
+export function setEmbedder(name) { _embedder = name; }
+export function getEmbedder()     { return _embedder; }
 
 /**
  * Generates an embedding vector for the given text using nomic-embed-text.
@@ -30,7 +34,7 @@ export async function embedBatch(texts) {
     res = await fetch(`${OLLAMA_URL}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'nomic-embed-text', input }),
+      body: JSON.stringify({ model: _embedder, input }),
     });
   } catch (err) {
     throw new Error(

@@ -14,9 +14,13 @@ A local AI developer assistant powered by **qwen3-coder** with a **RAG (Retrieva
 # 1. Install dependencies
 npm install
 
-# 2. Pull required Ollama models
+# 2. Pull required Ollama models (minimum)
 ollama pull nomic-embed-text
 ollama pull qwen3-coder
+
+# Alternative embedders (optional — swap via --embedder)
+# ollama pull mxbai-embed-large
+# ollama pull snowflake-arctic-embed2
 
 # 3. Link globally so `geniesh` works anywhere (run from the project directory)
 cd /path/to/geniesh && npm link
@@ -54,6 +58,9 @@ Scans a directory, chunks all source files, generates embeddings, builds a **sym
 ```bash
 geniesh index --dir src/
 geniesh index --dir .
+
+# Use a different embedding model
+geniesh --embedder mxbai-embed-large index --dir .
 ```
 
 Files in `node_modules`, `dist`, `.git`, `build`, `coverage`, and hidden directories are automatically ignored.
@@ -106,6 +113,7 @@ Starts an intelligent multi-turn chat session with auto-indexing, **BFS relation
 geniesh chat
 geniesh chat --dir /path/to/project
 geniesh chat --model qwen3-coder
+geniesh --embedder mxbai-embed-large chat --model llama3.1
 ```
 
 If no `.ai-index.json` exists in the current directory, the index is built automatically before the session starts.
@@ -202,24 +210,125 @@ Use this instead of `--dir` RAG when you want to find **where** something is cal
 
 ---
 
+## Architecture
+
+geniesh separates **LLM-provider-specific code** from **pure code-navigation logic**.
+Swap Ollama for OpenAI — swap only the adapter; the kernel never changes.
+
+### One flow, two responsibilities
+
+```
+User: "how does tryAdd work?"
+            │
+            ▼
+┌───────────────────────────────────┐
+│         ADAPTER LAYER             │  embedder.js → Ollama nomic-embed-text
+│  (LLM-provider-specific)          │       │
+│                                  │  embed(question) → [0.1, 0.4, …]
+│  src/search.js   ← injects →     │       │
+│  src/embedder.js  search() dep   │  search(index, embedding) → top-K chunks
+│  src/runner.js                   │       │
+│  src/prompt.js                   │  ← scored chunks + question
+│                                  │       │
+│  cli.js orchestrates:            │       │
+│   1. build/load index            │       │
+│   2. inject search() into kernel │       ▼
+│   3. stream LLM response    ─────┼──  contextString + trace  ──┐
+└──────────────────────────────────┘                            │
+            │ scored chunks (plain data, no embeddings)          │
+            ▼                                                    │
+┌───────────────────────────────────┐                            │
+│         KERNEL LAYER              │  (same layer, no arrows)   │
+│  (pure Node, no LLM deps)         │                            │
+│                                  │                            │
+│  packages/kernel/                │                            │
+│  ├── context-builder.js  ←───────┘                            │
+│  │   BFS traversal:              │                            │
+│  │   seed symbols → grep →       │                            │
+│  │   follow relations + import   │                            │
+│  │   edges → fill budget;        │                            │
+│  │   remaining budget → RAG      │                            │
+│  │   (via injected search())     │                            │
+│  ├── grep.js          (scope-    │                            │
+│  │   aware word-boundary grep)   │                            │
+│  ├── relations.js     (symbol→   │                            │
+│  │   file + file→symbol maps,    │                            │
+│  │   import edges)               │                            │
+│  ├── symbol-utils.js  (extract   │                            │
+│  │   camelCase/PascalCase/       │                            │
+│  │   snake_case symbols)         │                            │
+│  ├── chunker.js       (indexing  │                            │
+│  │   only; line-based 100/50)    │                            │
+│  └── fs-utils.js      (scan +    │                            │
+│      read files, skip .min/.git) │                            │
+│                                  │                            │
+│  Output:                         │                            │
+│  ├── contextString (concatenated │                            │
+│  │   code sections with labels)  │                            │
+│  └── trace (what was retrieved   │                            │
+│      and why, per round)         │                            │
+└──────────────────────────────────┘                            │
+            │                                                    │
+            │ contextString                                      │
+            ▼                                                    │
+┌───────────────────────────────────┐                            │
+│         ADAPTER LAYER             │◄───────────────────────────┘
+│  (LLM chat)                       │
+│                                  │
+│  runner.js → Ollama qwen3-coder  │
+│  prompt = system + contextString │
+│           + question             │
+│  stream: "tryAdd is a helper…"   │
+└───────────────────────────────────┘
+            │ answer
+            ▼
+         stdout
+```
+
+### What goes where
+
+| Concern | Module | Layer |
+|---------|--------|-------|
+| Embed query text → vector | `embedder.js` | Adapter |
+| Cosine-similarity search over index | `search.js` | Adapter¹ |
+| LLM prompt templates | `prompt.js` | Adapter |
+| Stream LLM response | `runner.js` | Adapter |
+| CLI orchestration | `cli.js` | Adapter |
+| Directory scanning, file reading | `fs-utils.js` | Kernel |
+| Symbol extraction (camelCase etc.) | `symbol-utils.js` | Kernel |
+| Word-boundary grep + scope windows | `grep.js` | Kernel |
+| Relation graph (symbol/file/import maps) | `relations.js` | Kernel |
+| Line-based code chunking (100/50) | `chunker.js` | Kernel |
+| BFS traversal + budget + RAG merge | `context-builder.js` | Kernel |
+
+¹ *search() calls embedder.js, so it's adapter-side. The algorithm (cosine similarity) is trivial — it lives in the adapter only because calling embed() is provider-specific. If embeddings are passed in, search could move to kernel.*
+
 ## How It Works
+
+geniesh is split into two layers:
+
+**`@geniesh/kernel`** (`packages/kernel/`) — the pure code navigation engine.
+Zero LLM dependencies. Can be imported by any tool (n8n, OpenCLAW, agent
+workers) without Ollama or a CLI.
 
 ```
 Indexing pipeline:
-  scan dir → skip .min.js/.min.css → chunk (150 lines, 50-line overlap)
-           → embed each chunk (nomic-embed-text, truncated to 6000 chars)
-           → save to .ai-index.json
-           → build relation graph with symbol metadata (kind, exported, lineRange)
-           → incremental merge: only re-scan files whose hash (mtime+size) changed
-           → prune stale symbols and files → save to .ai-relations.json
+  scan dir → skip .min.js/.min.css → chunk (100 lines, 50-line overlap)
+            → embed each chunk (nomic-embed-text, truncated to 6000 chars)
+            → save to .ai-index.json
+            → build relation graph with symbol metadata (kind, exported, lineRange)
+              + import edges (byImports / byImporters)
+            → incremental merge: only re-scan files whose hash (mtime+size) changed
+            → prune stale symbols and files → save to .ai-relations.json
 
 Chat context pipeline (per turn):
   extract symbols from question (camelCase/PascalCase/snake_case/ALL_CAPS/dotted)
     → seed BFS from question symbols (or top RAG chunks if none found)
     → for each round: grep symbols → retrieve code windows
     → discover new symbols via pre-built relation graph (no re-grepping)
-    → prioritize: exported > class > function > variable > reference
-    → repeat until budget exhausted (frontier ≤ 20)
+      + import-edge traversal (byImports / byImporters)
+    → prioritize: query relevance (1e6) > exported (1e5) > kind (1e3)
+    → repeat until budget exhausted (frontier ≤ 20, per-file cap 50%)
     → fill remaining budget with RAG (cosine similarity, MD files first)
     → inject as context prefix to LLM message
 
@@ -230,25 +339,41 @@ Query pipeline (--dir mode):
               → stream response (buffered, typewriter output)
 ```
 
-The LLM never reads files directly — all filesystem access happens in the CLI.
+The LLM never reads files directly — all filesystem access happens in the kernel.
+The `search()` function is injected as a dependency so you can swap Ollama for
+OpenAI, sentence-transformers, or a null fallback (grep-only BFS).
 
 ## Project Structure
 
 ```
-src/
-├── cli.js              Entry point — all commands
-├── fs-utils.js         Directory scanning and file reading
-├── chunker.js          Line-based code chunking
+@geniesh/kernel (packages/kernel/)     ← no LLM deps, pure Node
+├── src/
+│   ├── index.js              Barrel exports
+│   ├── fs-utils.js           Directory scanning, file reading
+│   ├── symbol-utils.js       Symbol extraction (camelCase, PascalCase, etc.)
+│   ├── grep.js               Word-boundary grep with scope windows
+│   ├── relations.js          Relation graph builder + import-edge extraction
+│   ├── chunker.js            Line-based code chunking
+│   └── context-builder.js    BFS traversal + budgeted retrieval + RAG merge
+│                              (accepts search() as dependency injection)
+└── package.json
+
+geniesh CLI (src/)
+├── cli.js              Entry point — all commands (injects search() into kernel)
+├── prompt.js           Prompt templates
+├── runner.js           Streaming Ollama LLM calls
 ├── embedder.js         Ollama nomic-embed-text embedding
-├── indexer.js          Build, load, and save the RAG index + relation graph
-├── search.js           Cosine similarity search
+├── search.js           Adapter: embed query → cosine similarity over index
+├── indexer.js          Full indexing pipeline (kernel + embedder + persistence)
 ├── extractor.js        Named function extraction
-├── grep.js             Symbol search and context extraction
-├── symbol-utils.js     Shared symbol extraction regexes and functions
-├── relations.js        Relation graph builder, loader, and data structures
-├── context-builder.js  BFS relation-graph + RAG context pipeline
-├── prompt.js           Prompt templates with context injection
-└── runner.js           Streaming Ollama LLM calls
+├── grep.js             Re-exports kernel grep + formatting helpers
+├── context-builder.js  Re-exports kernel context builder
+├── relations.js        Re-exports kernel relations + persistence helpers
+├── fs-utils.js         Re-exports kernel fs + extractFileRefs
+├── symbol-utils.js     Re-exports kernel symbol utils
+├── chunker.js          Re-exports kernel chunker
+├── md-parser.js        Markdown formatting
+└── spinners-ora.js     Terminal spinner animations
 ```
 
 ## The Alchemy Behind This

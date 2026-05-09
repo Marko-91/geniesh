@@ -1,15 +1,16 @@
 import { jest } from '@jest/globals';
 import { buildChatContext, applySlideWindow } from '../src/context-builder.js';
 import { search } from '../src/search.js';
-import { grepFiles } from '../src/grep.js';
 
-// Mock dependencies
+// Mock dependencies (kernel paths — context-builder lives in packages/kernel)
 jest.mock('../src/search.js', () => ({
   search: jest.fn(),
 }));
-jest.mock('../src/grep.js', () => ({
+jest.mock('../packages/kernel/src/grep.js', () => ({
   grepFiles: jest.fn(),
 }));
+
+import { grepFiles } from '../packages/kernel/src/grep.js';
 
 describe('context-builder', () => {
   beforeEach(() => {
@@ -23,7 +24,7 @@ describe('context-builder', () => {
       ]);
       grepFiles.mockResolvedValue([]);
 
-      const result = await buildChatContext('query', [{ file: 'a.js', embedding: [1] }], ['a.js']);
+      const result = await buildChatContext('query', [{ file: 'a.js', embedding: [1] }], ['a.js'], null, [], search);
       expect(result.contextString).toContain('code');
     });
   });

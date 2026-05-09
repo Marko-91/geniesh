@@ -13,6 +13,7 @@ import { loadRelations, relationsExist } from './relations.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt } from './prompt.js';
 import { runQuery, runChat, setModel } from './runner.js';
+import { setEmbedder } from './embedder.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
 import { extractSymbols } from './symbol-utils.js';
@@ -30,9 +31,11 @@ program
   .version(version)
   .enablePositionalOptions()
   .option('--model <name>', 'Ollama model to use', 'qwen3-coder')
+  .option('--embedder <name>', 'Ollama embedding model to use', 'nomic-embed-text')
   .hook('preAction', (thisCommand) => {
-    const model = thisCommand.opts().model;
+    const { model, embedder } = thisCommand.opts();
     if (model) setModel(model);
+    if (embedder) setEmbedder(embedder);
   });
 
 // ─── ai index --dir <path> ───────────────────────────────────────────────────
@@ -134,6 +137,7 @@ program
       console.log(`📂  Directory : ${dir}`);
     }
     console.log(`🧩  Model     : ${program.opts().model || 'qwen3-coder'}`);
+    console.log(`🔤  Embedder  : ${program.opts().embedder || 'nomic-embed-text'}`);
     console.log(`📚  Index     : ${index.length} chunks`);
     console.log('────────────────────────────────────────────────────────────\n');
 
@@ -179,7 +183,7 @@ program
       let contextText = '';
       let traceFormatted = '';
       try {
-        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles, relations, fileRefs);
+        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles, relations, fileRefs, search);
         contextText = contextString;
         traceFormatted = trace;
         ctxSpinner.succeed(

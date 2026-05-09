@@ -1,0 +1,10 @@
+{
+  "name": "@geniesh/kernel",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Code navigation kernel — relation graph, BFS traversal, symbol extraction, budgeted retrieval. No LLM dependencies.",
+  "main": "src/index.js",
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
