@@ -6,6 +6,7 @@ import { readFile } from './fs-utils.js';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 const CONTEXT_BUDGET     = 10000; // max chars of code context per turn
+const MAX_PER_FILE       = Math.floor(CONTEXT_BUDGET * 0.5); // prevent any single file from starving the rest
 const ROUND_0_CAP        = Math.floor(CONTEXT_BUDGET * 0.7); // reserve 30% for rounds ≥1
 const MAX_CHAT_TURNS     = 8;     // sliding window: keep last N user/assistant pairs
 const RAG_TOP_K          = 8;     // cosine candidates to consider
@@ -248,16 +249,21 @@ export async function buildChatContext(question, index, allFiles, relations, fil
   let   used     = 0;
   const sections = [];
   const seen     = new Set();  // deduplicate by "file:startLine"
+  const perFile  = new Map();  // char usage per file — prevents one file starving others
   const log      = [];         // human-readable depth log lines
   const trace    = [];         // retrieval method tracing
 
   function tryAdd(file, startLine, endLine, text, label, traceMetadata) {
     const key = `${file}:${startLine}`;
     if (seen.has(key)) return false;
+    const fileUsed = perFile.get(file) || 0;
+    if (fileUsed >= MAX_PER_FILE) return false;
     const block = `// ${label || file} (lines ${startLine}–${endLine})\n${text}\n`;
     if (used + block.length > budget) return false;
+    if (fileUsed + block.length > MAX_PER_FILE) return false;
     sections.push(block);
     seen.add(key);
+    perFile.set(file, fileUsed + block.length);
     used += block.length;
     if (traceMetadata) {
       trace.push({ file, startLine, endLine, ...traceMetadata });
@@ -272,7 +278,7 @@ export async function buildChatContext(question, index, allFiles, relations, fil
       const content = await readFile(fp);
       const lineCount = content.split('\n').length;
       // Leave 200 chars margin for tryAdd wrapper (label + line nums)
-      const maxLen = Math.max(budget - used - 200, 0);
+      const maxLen = Math.max(Math.min(budget - used - 200, MAX_PER_FILE), 0);
       const isTruncated = content.length > maxLen;
       const fileText = isTruncated
         ? content.slice(0, maxLen) + '\n... (truncated)'
@@ -463,6 +469,40 @@ export async function buildChatContext(question, index, allFiles, relations, fil
               const rsym = rentry.name || rentry;
               if (!seenSymbols.has(rsym) && !newSymbols.includes(rsym)) {
                 newSymbols.push(rsym);
+              }
+            }
+          }
+        }
+
+        // Follow import edges: files imported by this file
+        const imported = relations.byImports?.[file];
+        if (imported) {
+          for (const impFile of imported) {
+            if (seenFiles.has(impFile) || seenRelFiles.has(impFile)) continue;
+            seenRelFiles.add(impFile);
+            const impSyms = relations.byFile[impFile];
+            if (!impSyms) continue;
+            for (const entry of impSyms) {
+              const sym = entry.name || entry;
+              if (!seenSymbols.has(sym) && !newSymbols.includes(sym)) {
+                newSymbols.push(sym);
+              }
+            }
+          }
+        }
+
+        // Follow reverse import edges: files that import this file
+        const importers = relations.byImporters?.[file];
+        if (importers) {
+          for (const impFile of importers) {
+            if (seenFiles.has(impFile) || seenRelFiles.has(impFile)) continue;
+            seenRelFiles.add(impFile);
+            const impSyms = relations.byFile[impFile];
+            if (!impSyms) continue;
+            for (const entry of impSyms) {
+              const sym = entry.name || entry;
+              if (!seenSymbols.has(sym) && !newSymbols.includes(sym)) {
+                newSymbols.push(sym);
               }
             }
           }

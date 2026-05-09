@@ -108,9 +108,11 @@ program
       {
         role: 'system',
         content:
-          'You are a senior software engineer with full access to the codebase context provided. ' +
-          'Answer questions concisely and practically. Always reference exact file names and line numbers when relevant. ' +
-          'If the answer is not in the provided context, say so clearly instead of guessing.',
+          'You are a senior software engineer. Use the provided codebase context to ground your answers; ' +
+          'reference exact file names and line numbers when relevant. You may also draw on general software ' +
+          'engineering knowledge to explain concepts, patterns, and designs. If the codebase context is ' +
+          'insufficient, use general knowledge but clearly distinguish what is in the code vs. what is ' +
+          'general reasoning.',
       },
     ];
 
