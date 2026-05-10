@@ -6,7 +6,8 @@ import { extractAllSymbolsWithMetadata } from './symbol-utils.js';
 const SOURCE_EXTS = new Set([
   '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',
   '.py', '.go', '.rs', '.java', '.cpp', '.c', '.h',
-  '.rb', '.lisp', '.lsp', '.cl', '.cs', '.fs', '.fsx', '.vb',
+  '.rb', '.php',
+  '.lisp', '.lsp', '.cl', '.cs', '.fs', '.fsx', '.vb',
   '.swift', '.kt', '.scala', '.zig', '.lua',
 ]);
 
@@ -118,10 +119,21 @@ function extractImportPaths(content, filePath, knownFiles) {
   collect(/\((?:require|import)\s+'([^']+)'\)/g);
   collect(/^\s*import\s+(\S+)/gm);
   collect(/^\s*from\s+(\S+)\s+import/gm);
+  collect(/^\s*use\s+([^;]+)/gm);
 
   const resolved = [];
-  for (const mod of rawModules) {
-    const r = resolveImportPath(mod, sourceDir, knownFiles);
+  for (let mod of rawModules) {
+    mod = mod.replace(/\\/g, '/');
+    let r = resolveImportPath(mod, sourceDir, knownFiles);
+    if (!r && mod.includes('/')) {
+      const lastSeg = mod.split('/').pop();
+      r = resolveImportPath(lastSeg, sourceDir, knownFiles);
+    }
+    if (!r && mod.includes('/')) {
+      const dirBase = sourceDir.split(/[/\\]/).pop();
+      const normPath = mod.replace(new RegExp('^' + dirBase + '/'), '');
+      r = resolveImportPath(normPath, sourceDir, knownFiles);
+    }
     if (r && !resolved.includes(r)) resolved.push(r);
   }
   return resolved;

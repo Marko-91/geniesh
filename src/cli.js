@@ -16,6 +16,7 @@ import { runQuery, runChat, runGenerate, setModel } from './runner.js';
 import { setEmbedder } from './embedder.js';
 import { runEval, formatEvalResults } from './eval.js';
 import { generateBenchmark } from './benchmark-gen.js';
+import { runSelfImprove } from './autoimprove/auto-improve.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
 import { extractSymbols } from './symbol-utils.js';
@@ -440,16 +441,31 @@ benchmark
     }
   });
 
+// ─── ai self-improve [iterations] ────────────────────────────────────────
+
+program
+  .command('self-improve')
+  .description('Run the self-improvement loop: eval → analyze → fix → retest → repeat')
+  .argument('[iterations]', 'Maximum iterations (default 5)', parseInt)
+  .action(async (iterations) => {
+    try {
+      await runSelfImprove(iterations);
+    } catch (err) {
+      console.error(`\nError: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
 program.parseAsync(process.argv);
 
 async function checkOllamaHealth() {
+  const url = process.env.OLLAMA_HOST || 'http://localhost:11434';
   try {
-    // Try to run a simple Ollama command to check if it's up
-    execSync('ollama list', { stdio: 'ignore' });
-    console.log('Checking Ollama server health…');
+    const res = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     console.log('✅ Ollama server running!');
-  } catch (error) {
-    console.error('❌ Ollama server is not running. Please start Ollama with `ollama serve`. Check README.md for more instructions.');
+  } catch {
+    console.error('❌ Ollama server is not running. Start Ollama with `ollama serve`.');
     process.exit(1);
   }
 }

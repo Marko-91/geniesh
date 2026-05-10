@@ -7,8 +7,7 @@ RUN apk add --no-cache \
     curl \
     bash \
     build-base \
-    zstd \
-    && curl -fsSL https://ollama.com/install.sh | sh
+    dos2unix
 
 WORKDIR /workspace/geniesh
 
@@ -17,7 +16,7 @@ COPY packages/kernel/package.json ./packages/kernel/package.json
 RUN mkdir -p packages/kernel && npm install
 
 COPY . .
-RUN npm link
+RUN dos2unix src/cli.js packages/kernel/src/*.js && npm link
 
 WORKDIR /workspace
 CMD ["/bin/bash", "-l"]

@@ -52,7 +52,7 @@ That's it. No config files, no API keys, no data leaving your machine.
 ## Docker
 
 ```powershell
-cd docker; docker compose build geniesh; docker compose up -d; docker compose exec geniesh /bin/bash
+cd docker && docker compose build geniesh && up.sh
 ```
 
 Full docs: [`docker/README.md`](docker/README.md)

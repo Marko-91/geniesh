@@ -44,23 +44,14 @@ services:
     working_dir: /workspace/geniesh
     entrypoint: >
       sh -c "
-        echo '      ___                      _          ' &&
-        echo '     / __| ___ _ ___ _ _  ___ | |_  ___   ' &&
-        echo '    | (_ |/ -_) \ -_) \ / _ \|  _|/ -_)  ' &&
-        echo '     \___|\___/_/_\_/ _\__,_/ \__|\___|  ' &&
-        echo '                                         ' &&
-        echo '' &&
-        echo '=== Ollama is healthy ✓ ===' &&
-        echo '' &&
-        echo 'Pulling models in background ...' &&
-        (ollama pull qwen3-coder 2>&1 | sed \"s/^/  [qwen3-coder] /\") &&
-        (ollama pull nomic-embed-text 2>&1 | sed \"s/^/  [nomic-embed-text] /\") &&
-        echo '' &&
-        echo '=== geniesh is ready ===' &&
-        echo '  geniesh index --dir <repo>' &&
-        echo '  geniesh chat' &&
-        echo '  geniesh eval --benchmark <file> --dir <repo>' &&
-        echo '' &&
+        dos2unix /workspace/geniesh/src/cli.js /workspace/geniesh/packages/kernel/src/*.js 2>/dev/null
+        echo 'Pulling models (first time only) …'
+        echo '--- qwen3-coder ---'
+        curl -s http://ollama:11434/api/pull -d '{\"name\":\"qwen3-coder\"}'
+        echo '--- nomic-embed-text ---'
+        curl -s http://ollama:11434/api/pull -d '{\"name\":\"nomic-embed-text\"}'
+        echo ''
+        echo '=== geniesh ready ==='
         exec /bin/bash -l
       "
     deploy:
