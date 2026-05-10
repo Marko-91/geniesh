@@ -10,6 +10,38 @@ export function setModel(name) { _model = name; }
 export function getModel()     { return _model; }
 
 /**
+ * Runs a single-turn prompt against the given model and returns the response text.
+ * Does NOT write to stdout — used for chaining model outputs (e.g., review command).
+ *
+ * @param {string} prompt
+ * @param {string} [model]  Model name; defaults to _model
+ * @returns {Promise<string>}
+ */
+export async function runGenerate(prompt, model) {
+  const m = model || _model;
+  const spinner = ora({ text: `Thinking (${m})…`, spinner: 'dots' }).start();
+  let res;
+  try {
+    res = await fetch(`${OLLAMA_URL}/api/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: m, prompt, stream: false, think: false }),
+    });
+  } catch (err) {
+    spinner.fail('Ollama unreachable');
+    throw new Error(`Cannot connect to Ollama at ${OLLAMA_URL}. Is Ollama running?\n  ${err.message}`);
+  }
+  if (!res.ok) {
+    spinner.fail(`Model error ${res.status}`);
+    const body = await res.text();
+    throw new Error(`Ollama generate error ${res.status}: ${body}`);
+  }
+  spinner.succeed(`Done (${m})`);
+  const data = await res.json();
+  return data.response || '';
+}
+
+/**
  * Streams a single-turn response from Llama 3 to stdout.
  * Uses /api/generate with streaming enabled.
  *

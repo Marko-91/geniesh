@@ -199,6 +199,25 @@ Use this instead of `--dir` RAG when you want to find **where** something is cal
 
 ---
 
+### `geniesh review "<query>" --file <path>`
+
+Runs a two-model review chain: one model analyzes the code, then a second model critiques the analysis. Requires two Ollama models installed.
+
+```bash
+# Default: qwen3-coder analyzes, llama3.1 reviews
+geniesh review "find bugs in src/auth.js" --file src/auth.js
+
+# Specify both models explicitly
+geniesh review "explain chunking" --file src/chunker.js --model qwen3-coder --reviewer llama3.1
+
+# Use with RAG over an indexed directory
+geniesh review "how does auth work?" --dir src/
+```
+
+Output is printed in two stages with clear headers. The reviewer checks for accuracy, completeness, missed bugs, and better approaches.
+
+---
+
 ## Showcase
 
 > Real terminal screenshots generated from actual sessions on Express 5.x (152 files, 502 chunks, 1470 symbols).

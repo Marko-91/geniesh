@@ -12,7 +12,7 @@ import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './in
 import { loadRelations, relationsExist } from './relations.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt } from './prompt.js';
-import { runQuery, runChat, setModel } from './runner.js';
+import { runQuery, runChat, runGenerate, setModel } from './runner.js';
 import { setEmbedder } from './embedder.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
@@ -329,6 +329,70 @@ Return:
 Be concise and practical.`;
         await runQuery(prompt);
       }
+    } catch (err) {
+      console.error(`\nError: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+// ─── ai review <query> --file / --dir ───────────────────────────────────────
+
+program
+  .command('review')
+  .description('Analyze code with one model, then critique with another')
+  .argument('<query>', 'Question about the code')
+  .option('--file <path>', 'File to analyze')
+  .option('--dir <path>', 'Directory to search (requires index)')
+  .option('--reviewer <model>', 'Reviewer model to critique the analysis', 'llama3.1')
+  .action(async (query, opts) => {
+    try {
+      const primaryModel = program.opts().model || 'qwen3-coder';
+      const reviewerModel = opts.reviewer;
+      let context = '';
+
+      if (opts.file) {
+        const content = await readFile(opts.file);
+        context = `<codebase_context>\n${content}\n</codebase_context>`;
+      } else if (opts.dir) {
+        if (!(await indexExists())) {
+          console.error(`No index found. Run first:\n  geniesh index --dir ${opts.dir}`);
+          process.exit(1);
+        }
+        const index = await loadIndex();
+        const chunks = await search(query, index, 5);
+        if (chunks.length === 0) {
+          console.error('No relevant chunks found in the index.');
+          process.exit(1);
+        }
+        context = buildPrompt(query, chunks);
+      } else {
+        console.error('Provide --file <path> or --dir <path>');
+        process.exit(1);
+      }
+
+      console.log(`\n\x1b[1mStage 1: Analysis (\x1b[36m${primaryModel}\x1b[0m)\x1b[0m\n`);
+
+      const analysis = await runGenerate(
+        `You are a senior software engineer.\n\n${context}\n\nQuestion: ${query}\n\nAnalyze the code and provide a thorough answer. Be specific with file names and line numbers.`,
+        primaryModel,
+      );
+
+      console.log(`\n\x1b[1mStage 2: Review (\x1b[33m${reviewerModel}\x1b[0m)\x1b[0m\n`);
+
+      await runQuery(
+        `You are a senior software engineer acting as a code reviewer.\n\n` +
+        `Below is an analysis produced by another AI model (${primaryModel}) in response to the question "${query}".\n\n` +
+        `<analysis>\n${analysis}\n</analysis>\n\n` +
+        `Your job is to review this analysis for:\n` +
+        `- Accuracy: Are the claims correct? Are file names and line numbers real?\n` +
+        `- Completeness: Did the analysis miss anything important?\n` +
+        `- Bug hunting: Can you find bugs the analysis missed?\n` +
+        `- Improvements: Are there better approaches?\n\n` +
+        `Be critical and specific. Praise what's good, correct what's wrong, add what's missing.`,
+        reviewerModel,
+      );
+
+      console.log();
     } catch (err) {
       console.error(`\nError: ${err.message}`);
       process.exit(1);
