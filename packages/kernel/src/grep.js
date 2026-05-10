@@ -3,6 +3,19 @@ import { readFile } from './fs-utils.js';
 const MAX_SCOPE_SEARCH_LINES = 20;
 const MAX_SCOPE_EXPANSION = 3;
 
+const fileCache = new Map();
+
+export function clearGrepCache() {
+  fileCache.clear();
+}
+
+async function readWithCache(filePath) {
+  if (fileCache.has(filePath)) return fileCache.get(filePath);
+  const content = await readFile(filePath);
+  fileCache.set(filePath, content);
+  return content;
+}
+
 function escapeRegex(str) {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -63,7 +76,7 @@ export async function grepFiles(pattern, files, contextLines = 20, depth = 0) {
 
   for (const filePath of files) {
     let content;
-    try { content = await readFile(filePath); } catch { continue; }
+    try { content = await readWithCache(filePath); } catch { continue; }
 
     const lines = content.split('\n');
     const matchIndices = [];

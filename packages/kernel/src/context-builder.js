@@ -1,5 +1,5 @@
 import { basename, extname, relative } from 'path';
-import { grepFiles } from './grep.js';
+import { grepFiles, clearGrepCache } from './grep.js';
 import { extractSymbols } from './symbol-utils.js';
 import { readFile } from './fs-utils.js';
 
@@ -206,6 +206,7 @@ function tryAddHelper(sections, seen, perFile, used, budget, MAX_PER_FILE, file,
 }
 
 export async function buildChatContext(question, index, allFiles, relations, fileRefs = [], searchFn = null) {
+  clearGrepCache();
   const budget   = CONTEXT_BUDGET;
   const used     = { value: 0 };
   const sections = [];
