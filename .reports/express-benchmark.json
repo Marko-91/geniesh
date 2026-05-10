@@ -1,0 +1,94 @@
+{
+  "benchmarks": [
+    {
+      "name": "Application creation",
+      "question": "How does the express application get created? Walk me through createApplication and app.init.",
+      "expected_files": ["lib/express.js", "lib/application.js"],
+      "expected_symbols": ["createApplication", "init", "defaultConfiguration"]
+    },
+    {
+      "name": "Middleware mounting",
+      "question": "How does app.use work for mounting middleware in express? What happens when you call app.use(someFunction)?",
+      "expected_files": ["lib/application.js"],
+      "expected_symbols": ["use", "handle", "flatten"]
+    },
+    {
+      "name": "HTTP verb routing",
+      "question": "How does routing work? How are app.get, app.post, and other HTTP verb methods registered?",
+      "expected_files": ["lib/application.js", "lib/utils.js"],
+      "expected_symbols": ["route", "methods", "all"]
+    },
+    {
+      "name": "Error handling pipeline",
+      "question": "How are errors handled in express? How does the error flow through the middleware chain?",
+      "expected_files": ["lib/application.js", "lib/response.js"],
+      "expected_symbols": ["handle", "finalhandler", "logerror"]
+    },
+    {
+      "name": "Request object extensions",
+      "question": "What properties does the express request object provide beyond the standard Node http.IncomingMessage? How are they implemented?",
+      "expected_files": ["lib/request.js"],
+      "expected_symbols": ["accepts", "get", "query", "ip", "hostname", "protocol", "secure", "xhr"]
+    },
+    {
+      "name": "Response sending methods",
+      "question": "What methods does the express response object provide for sending data? How does res.send work internally?",
+      "expected_files": ["lib/response.js"],
+      "expected_symbols": ["send", "json", "jsonp", "sendFile", "sendStatus", "status"]
+    },
+    {
+      "name": "View template rendering",
+      "question": "How does view rendering work in express? Walk through what happens when res.render is called.",
+      "expected_files": ["lib/response.js", "lib/application.js", "lib/view.js"],
+      "expected_symbols": ["render", "View", "lookup", "resolve", "tryRender"]
+    },
+    {
+      "name": "Static file serving",
+      "question": "How does express serve static files? What is the static middleware and how is it configured?",
+      "expected_files": ["lib/express.js", "lib/response.js"],
+      "expected_symbols": ["static", "sendFile", "sendfile"]
+    },
+    {
+      "name": "Settings and configuration",
+      "question": "How do app settings like etag, query parser, and trust proxy work? How are they compiled from string values to functions?",
+      "expected_files": ["lib/application.js", "lib/utils.js"],
+      "expected_symbols": ["compileETag", "compileQueryParser", "compileTrust", "etag", "set", "enabled"]
+    },
+    {
+      "name": "Query string parsing",
+      "question": "How does the query string get parsed in express? What is the difference between simple and extended mode?",
+      "expected_files": ["lib/request.js", "lib/utils.js", "lib/application.js"],
+      "expected_symbols": ["compileQueryParser", "parseExtendedQueryString", "query"]
+    },
+    {
+      "name": "Cookie handling",
+      "question": "How are cookies set and cleared in express? How does signed cookie support work?",
+      "expected_files": ["lib/response.js"],
+      "expected_symbols": ["cookie", "clearCookie", "cookieSignature", "sign"]
+    },
+    {
+      "name": "Content negotiation",
+      "question": "How does content negotiation work in express? How do req.accepts and res.format determine what to return?",
+      "expected_files": ["lib/request.js", "lib/response.js", "lib/utils.js"],
+      "expected_symbols": ["accepts", "acceptsEncodings", "format", "normalizeType", "type"]
+    },
+    {
+      "name": "Proxy trust and IP detection",
+      "question": "How does the trust proxy setting affect req.ip, req.hostname, and req.protocol? How is proxy trust compiled?",
+      "expected_files": ["lib/request.js", "lib/utils.js", "lib/application.js"],
+      "expected_symbols": ["compileTrust", "ip", "ips", "protocol", "hostname", "proxyaddr"]
+    },
+    {
+      "name": "Sub-app mounting",
+      "question": "How are sub-applications mounted in express? What events are emitted when mounting?",
+      "expected_files": ["lib/application.js"],
+      "expected_symbols": ["use", "mountpath", "path"]
+    },
+    {
+      "name": "ETag generation",
+      "question": "How are ETags generated for responses in express? How does the etag setting control this behavior?",
+      "expected_files": ["lib/utils.js", "lib/response.js", "lib/application.js"],
+      "expected_symbols": ["compileETag", "etag", "wetag", "createETagGenerator"]
+    }
+  ]
+}

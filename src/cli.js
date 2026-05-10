@@ -14,6 +14,7 @@ import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt } from './prompt.js';
 import { runQuery, runChat, runGenerate, setModel } from './runner.js';
 import { setEmbedder } from './embedder.js';
+import { runEval, formatEvalResults } from './eval.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
 import { extractSymbols } from './symbol-utils.js';
@@ -394,6 +395,24 @@ program
       setModel(primaryModel);
 
       console.log();
+    } catch (err) {
+      console.error(`\nError: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+// ─── ai eval --benchmark <file> --dir <path> ────────────────────────────────
+
+program
+  .command('eval')
+  .description('Evaluate retrieval quality against a benchmark suite')
+  .requiredOption('--benchmark <file>', 'Benchmark JSON file')
+  .requiredOption('--dir <path>', 'Directory of the codebase to evaluate against')
+  .option('--verbose', 'Print per-benchmark details')
+  .action(async (opts) => {
+    try {
+      const results = await runEval(opts.benchmark, opts.dir, !!opts.verbose);
+      console.log(formatEvalResults(results));
     } catch (err) {
       console.error(`\nError: ${err.message}`);
       process.exit(1);

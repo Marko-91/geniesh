@@ -130,6 +130,10 @@ export function extractAllSymbols(text) {
   return [...new Set(raw)].filter(s => !DOMAIN_RE.test(s) && !isEnglishNoise(s));
 }
 
+const FUNCTION_DEF_RE = /\b(function|const|let|var)\s+([a-z]{2,})(?:\s*[=(])/g;
+
+const PROPERTY_FN_RE = /(?:\.|['"]?:?\s*)([a-z]{2,})\s*[:=]\s*(?:async\s+)?function\b/g;
+
 export function extractAllSymbolsWithMetadata(content) {
   const lines = content.split('\n');
   const seen = new Set();
@@ -138,7 +142,7 @@ export function extractAllSymbolsWithMetadata(content) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     const matches = [...line.matchAll(SYMBOL_RE)];
-    if (matches.length === 0) continue;
+    if (matches.length === 0 && !FUNCTION_DEF_RE.test(line) && !PROPERTY_FN_RE.test(line)) continue;
 
     for (const m of matches) {
       const name = m[1];
@@ -150,6 +154,24 @@ export function extractAllSymbolsWithMetadata(content) {
       const lineRange = guessLineRange(lines, i, kind);
 
       result.push({ name, kind, exported, lineRange });
+    }
+
+    FUNCTION_DEF_RE.lastIndex = 0;
+    let fm;
+    while ((fm = FUNCTION_DEF_RE.exec(line)) !== null) {
+      const name = fm[2];
+      if (seen.has(name) || DOMAIN_RE.test(name) || isEnglishNoise(name)) continue;
+      seen.add(name);
+      result.push({ name, kind: 'function', exported: isExported(line, name), lineRange: [i + 1, i + 1] });
+    }
+
+    PROPERTY_FN_RE.lastIndex = 0;
+    let pm;
+    while ((pm = PROPERTY_FN_RE.exec(line)) !== null) {
+      const name = pm[1];
+      if (seen.has(name) || DOMAIN_RE.test(name) || isEnglishNoise(name)) continue;
+      seen.add(name);
+      result.push({ name, kind: 'function', exported: isExported(line, name), lineRange: [i + 1, i + 1] });
     }
   }
 

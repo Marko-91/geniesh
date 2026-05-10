@@ -100,7 +100,7 @@ function queryRelevanceScore(symbol, queryTerms) {
 }
 
 const HIGH_PRIORITY_DIRS = /[/\\](src|lib|app|core|include|packages)[/\\]/;
-const LOW_PRIORITY_DIRS  = /^|[/\\](test|spec|__tests__|__mocks__|fixtures|examples)[/\\]/;
+const LOW_PRIORITY_DIRS  = /[/\\](test|spec|__tests__|__mocks__|fixtures|examples|docs)[/\\]/;
 
 function fileTier(filePath) {
   const name = basename(filePath).toLowerCase();
@@ -314,9 +314,12 @@ export async function buildChatContext(question, index, allFiles, relations, fil
 
       let results;
       try {
-        results = await grepFiles(sym, ragFiles, GREP_CONTEXT_LINES, bfsRound);
-        if (results.length === 0) {
-          results = await grepFiles(sym, allFiles, GREP_CONTEXT_LINES, bfsRound);
+        results = await grepFiles(sym, allFiles, GREP_CONTEXT_LINES, bfsRound);
+        if (ragFiles.length > 0) {
+          const ragSet = new Set(ragFiles);
+          const ragFirst = results.filter(r => ragSet.has(r.file));
+          const rest = results.filter(r => !ragSet.has(r.file));
+          results = [...ragFirst, ...rest];
         }
       } catch {
         continue;
@@ -327,8 +330,7 @@ export async function buildChatContext(question, index, allFiles, relations, fil
         for (const segment of sym.split('.')) {
           if (segment.length < 2) continue;
           try {
-            let r = await grepFiles(segment, ragFiles, GREP_CONTEXT_LINES, bfsRound);
-            if (r.length === 0) r = await grepFiles(segment, allFiles, GREP_CONTEXT_LINES, bfsRound);
+            let r = await grepFiles(segment, allFiles, GREP_CONTEXT_LINES, bfsRound);
             segResults.push(...r);
           } catch { continue; }
         }
