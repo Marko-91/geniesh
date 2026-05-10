@@ -1,20 +1,20 @@
-# Downloads and imports a Debian rootfs as a local Docker image.
-# This bypasses Docker Hub's zstd-compressed layers entirely.
-$RootfsUrl = "https://github.com/debuerreotype/docker-debian-artifacts/raw/dist-amd64/bookworm/rootfs.tar.xz"
-$ImageName = "geniesh-base:latest"
-$Tarball = "$env:TEMP\debian-rootfs.tar.xz"
+# Pre-pulls Alpine base image using classic engine to avoid BuildKit
+# zstd extraction issues on some Windows Docker installations.
+# Also cleans up any previous corrupt geniesh-base image.
 
-Write-Host "=== Downloading Debian rootfs (xz compressed, ~30 MB) ==="
-curl.exe -L -o $Tarball $RootfsUrl
-if (-not $?) { throw "Download failed" }
+Write-Host "=== Cleaning old corrupt images ==="
+docker rmi geniesh-base:latest -f 2>$null
 
-Write-Host "=== Importing as Docker image '$ImageName' ==="
-docker import $Tarball $ImageName
-if (-not $?) { throw "Import failed" }
+$Image = "alpine:3.20"
+Write-Host "=== Pulling $Image (classic engine) ==="
+docker pull --platform=linux/amd64 $Image 2>&1
+if (-not $?) {
+    Write-Host "Trying without --platform..."
+    docker pull $Image 2>&1
+    if (-not $?) { throw "Pull failed" }
+}
 
-Remove-Item $Tarball -Force
-
-Write-Host "=== Image ready ==="
-docker images $ImageName
+Write-Host "=== Ready ==="
+docker images $Image
 Write-Host ""
-Write-Host "Now run: docker compose build geniesh && docker compose up -d"
+Write-Host "Now run: docker compose build geniesh --no-cache && docker compose up -d"

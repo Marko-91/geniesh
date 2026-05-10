@@ -14,7 +14,7 @@ Run geniesh (plus Ollama) in a single Docker compose stack — no manual Node.js
 # Windows PowerShell
 cd docker
 .\setup.ps1
-docker compose build geniesh
+docker compose build geniesh --no-cache
 docker compose up -d
 docker compose exec geniesh /bin/bash
 ```
@@ -23,7 +23,7 @@ docker compose exec geniesh /bin/bash
 # Linux / macOS
 cd docker
 chmod +x setup.sh && ./setup.sh
-docker compose build geniesh
+docker compose build geniesh --no-cache
 docker compose up -d
 docker compose exec geniesh /bin/bash
 ```
@@ -37,9 +37,9 @@ Two containers defined in `docker/docker-compose.yml`:
 | Container | Base image | Role | Memory limit |
 |-----------|-----------|------|-------------|
 | `geniesh-ollama` | `ollama/ollama:latest` | LLM inference server | 16 GB |
-| `geniesh-worker` | `geniesh-base:latest` (locally-imported Debian rootfs) | geniesh CLI + tools | 8 GB |
+| `geniesh-worker` | `alpine:3.20` | geniesh CLI + tools | 8 GB |
 
-The `geniesh-worker` image is built from a **locally-imported Debian rootfs** (downloaded via `setup.ps1`/`setup.sh` as a gzip/xz tarball) to avoid Docker Hub's zstd-compressed image layers, which some Windows Docker Desktop installations cannot extract.
+Alpine is used as the base because its Docker layers use gzip compression (not zstd), avoiding a known extraction issue on some Windows Docker Desktop installations. The `setup.ps1`/`setup.sh` script pre-pulls the image using the classic engine so BuildKit never touches the zstd code path.
 
 - `ollama` runs the model server; `geniesh` connects via `OLLAMA_HOST=http://ollama:11434`.
 - Models persist in a named volume (`ollama-data`) — no re-download on restart.
@@ -72,10 +72,10 @@ docker compose down -v
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | Builds geniesh worker image on top of local Debian rootfs |
+| `Dockerfile` | Builds geniesh worker image on top of Alpine |
 | `docker-compose.yml` | Orchestrates ollama + geniesh services |
-| `setup.ps1` | Downloads and imports Debian rootfs (Windows) |
-| `setup.sh` | Downloads and imports Debian rootfs (Linux/macOS) |
+| `setup.ps1` | Pre-pulls Alpine image (Windows) |
+| `setup.sh` | Pre-pulls Alpine image (Linux/macOS) |
 | `start.sh` | One-command build & launch (Linux/macOS) |
 | `pull-models.sh` | Pulls qwen3-coder + nomic-embed-text |
 

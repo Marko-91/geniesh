@@ -53,12 +53,12 @@ That's it. No config files, no API keys, no data leaving your machine.
 
 ```powershell
 # Windows
-cd docker; .\setup.ps1; docker compose build geniesh; docker compose up -d; docker compose exec geniesh /bin/bash
+cd docker; .\setup.ps1; docker compose build geniesh --no-cache; docker compose up -d; docker compose exec geniesh /bin/bash
 ```
 
 ```bash
 # Linux / macOS
-cd docker && chmod +x setup.sh && ./setup.sh && docker compose build geniesh && docker compose up -d && docker compose exec geniesh /bin/bash
+cd docker && chmod +x setup.sh && ./setup.sh && docker compose build geniesh --no-cache && docker compose up -d && docker compose exec geniesh /bin/bash
 ```
 
 Full docs: [`docker/README.md`](docker/README.md)
