@@ -379,6 +379,7 @@ program
 
       console.log(`\n\x1b[1mStage 2: Review (\x1b[33m${reviewerModel}\x1b[0m)\x1b[0m\n`);
 
+      setModel(reviewerModel);
       await runQuery(
         `You are a senior software engineer acting as a code reviewer.\n\n` +
         `Below is an analysis produced by another AI model (${primaryModel}) in response to the question "${query}".\n\n` +
@@ -389,8 +390,8 @@ program
         `- Bug hunting: Can you find bugs the analysis missed?\n` +
         `- Improvements: Are there better approaches?\n\n` +
         `Be critical and specific. Praise what's good, correct what's wrong, add what's missing.`,
-        reviewerModel,
       );
+      setModel(primaryModel);
 
       console.log();
     } catch (err) {
