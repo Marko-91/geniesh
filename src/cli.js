@@ -15,6 +15,7 @@ import { buildPrompt, buildDirectPrompt } from './prompt.js';
 import { runQuery, runChat, runGenerate, setModel } from './runner.js';
 import { setEmbedder } from './embedder.js';
 import { runEval, formatEvalResults } from './eval.js';
+import { generateBenchmark } from './benchmark-gen.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
 import { extractSymbols } from './symbol-utils.js';
@@ -413,6 +414,26 @@ program
     try {
       const results = await runEval(opts.benchmark, opts.dir, !!opts.verbose);
       console.log(formatEvalResults(results));
+    } catch (err) {
+      console.error(`\nError: ${err.message}`);
+      process.exit(1);
+    }
+  });
+
+// ─── ai benchmark generate --dir <path> --output <file> ────────────────────
+
+const benchmark = program.command('benchmark').description('Generate and manage benchmark suites');
+
+benchmark
+  .command('generate')
+  .description('Auto-generate a benchmark suite by analyzing the codebase with an LLM')
+  .requiredOption('--dir <path>', 'Directory of the codebase to analyze')
+  .option('--output <file>', 'Output benchmark JSON file', 'geniesh-benchmark.json')
+  .option('--model <name>', 'Ollama model to use for generation')
+  .action(async (opts) => {
+    try {
+      const model = opts.model || program.opts().model;
+      await generateBenchmark(opts.output, opts.dir, model);
     } catch (err) {
       console.error(`\nError: ${err.message}`);
       process.exit(1);
