@@ -13,8 +13,8 @@ RUN apk add --no-cache \
     bash \
     build-base
 
-# Ollama CLI
-RUN curl -fsSL https://ollama.com/install.sh | sh
+# Ollama CLI (zstd needed — Ollama ships its binary as .tar.zst)
+RUN apk add --no-cache zstd && curl -fsSL https://ollama.com/install.sh | sh
 
 WORKDIR /workspace/geniesh
 
