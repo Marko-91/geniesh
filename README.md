@@ -49,6 +49,63 @@ geniesh refs validateToken --dir src/ --explain
 
 That's it. No config files, no API keys, no data leaving your machine.
 
+## Docker
+
+Run geniesh (plus Ollama) in a single Docker compose stack — no manual Node.js or Ollama installation needed.
+
+### Quick start
+
+```bash
+cd docker
+docker compose build geniesh
+docker compose up -d
+docker compose exec geniesh /bin/bash
+```
+
+On first boot the container automatically pulls `qwen3-coder` and `nomic-embed-text`. All source code is mounted live — edit outside, run inside.
+
+### Architecture
+
+Two containers defined in `docker/docker-compose.yml`:
+
+| Container | Base image | Role | Memory limit |
+|-----------|-----------|------|-------------|
+| `geniesh-ollama` | `ollama/ollama:latest` | LLM inference server | 16 GB |
+| `geniesh-worker` | `ubuntu:22.04` + Node.js 20 | geniesh CLI + tools | 8 GB |
+
+- `ollama` runs the model server; `geniesh` connects via `OLLAMA_HOST=http://ollama:11434`.
+- Models persist in a named volume (`ollama-data`) — no re-download on restart.
+- Source code is volume-mounted from the host; `node_modules` is persisted in its own named volume so the build-layer `npm install` survives the mount.
+- Use `docker compose logs -f geniesh` to watch model pulls.
+
+### Useful commands
+
+```bash
+# Attach a shell to the running worker
+docker compose exec geniesh /bin/bash
+
+# Index a benchmark repo
+docker compose exec geniesh geniesh index --dir /workspace/repos/flask
+
+# Run the eval suite
+docker compose exec geniesh geniesh eval --benchmark .reports/auto-flask-benchmark.json --dir /workspace/repos/flask
+
+# Watch Ollama logs
+docker compose logs -f ollama
+
+# Tear everything down (volumes preserved)
+docker compose down
+
+# Full reset (wipes models and data)
+docker compose down -v
+```
+
+### Resource notes
+
+- **20 GB RAM** is sufficient: qwen3-coder (7B, Q4) uses ~5 GB, nomic-embed-text ~0.5 GB, Node + system ~1-2 GB.
+- **80 GB disk** comfortably holds both models, the geniesh codebase, and several cloned benchmark repos.
+- First `docker compose up` will download the Ollama image (~2 GB) and both models (~5 GB total).
+
 ## Release Process
 
 Every push to `main` is a release. We squash-merge feature branches and bump the version following semver:

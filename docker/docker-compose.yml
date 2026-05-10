@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: geniesh-ollama
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: 16G
+        reservations:
+          memory: 8G
+
+  geniesh:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    container_name: geniesh-worker
+    restart: unless-stopped
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+      - OLLAMA_MODEL=qwen3-coder
+      - OLLAMA_EMBEDDER=nomic-embed-text
+    volumes:
+      # Mount source code (live reload for development)
+      - ..:/workspace/geniesh
+      # Persist node_modules from the image build (overrides the mount)
+      - geniesh-node_modules:/workspace/geniesh/node_modules
+      - geniesh-data:/workspace/data
+    stdin_open: true
+    tty: true
+    working_dir: /workspace/geniesh
+    entrypoint: >
+      sh -c "
+        echo '      ___                      _          ' &&
+        echo '     / __| ___ _ ___ _ _  ___ | |_  ___   ' &&
+        echo '    | (_ |/ -_) \ -_) \ / _ \|  _|/ -_)  ' &&
+        echo '     \___|\___/_/_\_/ _\\\__,_/ \__|\___|  ' &&
+        echo '                                         ' &&
+        echo '' &&
+        echo '=== Ollama is healthy ✓ ===' &&
+        echo '' &&
+        echo 'Pulling models in background ...' &&
+        (ollama pull qwen3-coder 2>&1 | sed \"s/^/  [qwen3-coder] /\") &&
+        (ollama pull nomic-embed-text 2>&1 | sed \"s/^/  [nomic-embed-text] /\") &&
+        echo '' &&
+        echo '=== geniesh is ready ===' &&
+        echo '  geniesh index --dir <repo>' &&
+        echo '  geniesh chat' &&
+        echo '  geniesh eval --benchmark <file> --dir <repo>' &&
+        echo '' &&
+        exec /bin/bash -l
+      "
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+        reservations:
+          memory: 4G
+
+volumes:
+  ollama-data:
+    driver: local
+  geniesh-node_modules:
+    driver: local
+  geniesh-data:
+    driver: local

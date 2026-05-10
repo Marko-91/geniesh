@@ -1,0 +1,15 @@
+node_modules
+.git
+geniesh-index.json
+geniesh-relations.json
+.reports
+express
+flask
+gin
+ripgrep
+zod
+__tests__
+coverage
+dist
+.tmp
+*.md
