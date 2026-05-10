@@ -49,5 +49,3 @@ credentials/*
 /ripgrep/
 /zod/
 
-# Docker — downloaded Alpine rootfs
-/alpine-minirootfs.tar.gz
