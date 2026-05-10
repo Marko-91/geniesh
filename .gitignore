@@ -9,7 +9,11 @@
 # IDE metadata
 /.idea/
 
-# Llama CLI outputs
+# Geniesh index and relations
+/geniesh-index.json
+/geniesh-relations.json
+
+# Legacy index names (migration)
 /.ai-index.json
 /.ai-relations.json
 

@@ -6,7 +6,7 @@ import { embed, embedBatch } from './embedder.js';
 import { buildRelations, saveRelations } from './relations.js';
 import ora from 'ora';
 
-const INDEX_FILE = '.ai-index.json';
+const INDEX_FILE = 'geniesh-index.json';
 const CONCURRENCY = 4; // embed N files in parallel
 
 // Simple concurrent pool — no extra deps needed
@@ -100,7 +100,7 @@ export async function buildIndex(dir) {
     await saveRelations(relations);
     const symCount = Object.keys(relations.bySymbol).length;
     const relMs = (performance.now() - relStart).toFixed(0);
-    console.log(`  → Saved .ai-relations.json  (${symCount} symbols, ${relMs}ms)`);
+    console.log(`  → Saved geniesh-relations.json  (${symCount} symbols, ${relMs}ms)`);
   } catch (err) {
     console.log(`  → Relation graph skipped: ${err.message}`);
   }

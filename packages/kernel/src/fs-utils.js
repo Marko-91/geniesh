@@ -24,7 +24,9 @@ const IGNORED_EXTS = new Set([
 ]);
 
 const IGNORED_FILES = new Set([
-  '.ai-index.json', 'package-lock.json', 'yarn.lock',
+  'geniesh-index.json', 'geniesh-relations.json',
+  '.ai-index.json', '.ai-relations.json',
+  'package-lock.json', 'yarn.lock',
 ]);
 
 export async function scanDir(dir) {

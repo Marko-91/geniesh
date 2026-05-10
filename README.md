@@ -71,7 +71,7 @@ git push origin main --tags
 
 ### `geniesh index --dir <path>`
 
-Scans a directory, chunks all source files, generates embeddings, builds a **symbol relation graph**, and saves both `.ai-index.json` and `.ai-relations.json`. Run this once before using `geniesh chat`.
+Scans a directory, chunks all source files, generates embeddings, builds a **symbol relation graph**, and saves both `geniesh-index.json` and `geniesh-relations.json`. Run this once before using `geniesh chat`.
 
 ```bash
 geniesh index --dir src/
@@ -134,14 +134,14 @@ geniesh chat --model qwen3-coder
 geniesh --embedder mxbai-embed-large chat --model llama3.1
 ```
 
-If no `.ai-index.json` exists in the current directory, the index is built automatically before the session starts.
+If no `geniesh-index.json` exists in the current directory, the index is built automatically before the session starts.
 
 **How context is built per turn:**
 
 Each message triggers a two-tier context pipeline:
 
 1. **BFS relation-graph traversal (budget-limited)**  
-   Code symbols are extracted from your question (`camelCase`, `PascalCase`, `snake_case`, `ALL_CAPS`, `dotted.paths`). These seed a breadth-first search over a pre-built **symbol relation graph** (`.ai-relations.json`) that maps every symbol to the files it appears in and every file to the symbols it contains. Each symbol carries **metadata** — its kind (`class`, `function`, `variable`, `reference`), whether it's **exported**, and its **line range** in the source file. At each round, symbols are grepped to retrieve code windows, and the relation graph reveals new symbols from the same files — no re-grepping needed. New symbols are sorted by priority: exported symbols first, then class > function > variable > reference. The BFS continues until the 10,000-character context budget is exhausted (frontier capped at 20 symbols per round). If the question has no code symbols, the BFS is seeded from the top RAG chunks instead.
+   Code symbols are extracted from your question (`camelCase`, `PascalCase`, `snake_case`, `ALL_CAPS`, `dotted.paths`). These seed a breadth-first search over a pre-built **symbol relation graph** (`geniesh-relations.json`) that maps every symbol to the files it appears in and every file to the symbols it contains. Each symbol carries **metadata** — its kind (`class`, `function`, `variable`, `reference`), whether it's **exported**, and its **line range** in the source file. At each round, symbols are grepped to retrieve code windows, and the relation graph reveals new symbols from the same files — no re-grepping needed. New symbols are sorted by priority: exported symbols first, then class > function > variable > reference. The BFS continues until the 10,000-character context budget is exhausted (frontier capped at 20 symbols per round). If the question has no code symbols, the BFS is seeded from the top RAG chunks instead.
 
 2. **RAG (remaining budget)**  
    Cosine similarity search fills any remaining context budget, with README and `.md` files prioritised.
@@ -352,11 +352,11 @@ workers) without Ollama or a CLI.
 Indexing pipeline:
   scan dir → skip .min.js/.min.css → chunk (100 lines, 50-line overlap)
             → embed each chunk (nomic-embed-text, truncated to 6000 chars)
-            → save to .ai-index.json
+            → save to geniesh-index.json
             → build relation graph with symbol metadata (kind, exported, lineRange)
               + import edges (byImports / byImporters)
             → incremental merge: only re-scan files whose hash (mtime+size) changed
-            → prune stale symbols and files → save to .ai-relations.json
+            → prune stale symbols and files → save to geniesh-relations.json
 
 Chat context pipeline (per turn):
   extract symbols from question (camelCase/PascalCase/snake_case/ALL_CAPS/dotted)
@@ -435,8 +435,8 @@ If you want to contribute, don't write code. Write tests. Then make them pass.
 
 ## Notes
 
-- `.ai-index.json` and `.ai-relations.json` are excluded from git by default.
-- The `.ai-relations.json` graph persists across sessions. Re-running `geniesh index` performs an **incremental merge** — only files whose content changed (detected by mtime+size hash) are re-scanned, and stale symbols are pruned. A fresh build happens when no previous graph exists.
+- `geniesh-index.json` and `geniesh-relations.json` are excluded from git by default.
+- The `geniesh-relations.json` graph persists across sessions. Re-running `geniesh index` performs an **incremental merge** — only files whose content changed (detected by mtime+size hash) are re-scanned, and stale symbols are pruned. A fresh build happens when no previous graph exists.
 - Ollama must be running (`ollama serve`) before using any command.
 - Context budget is capped at 10,000 characters per turn.
 - Minified files (`.min.js`, `.min.css`) are automatically skipped during indexing.

@@ -82,12 +82,12 @@ describe('indexer', () => {
 
       const result = await loadIndex();
       expect(result).toEqual(indexData);
-      expect(fsReadFile).toHaveBeenCalledWith('.ai-index.json', 'utf-8');
+      expect(fsReadFile).toHaveBeenCalledWith('geniesh-index.json', 'utf-8');
     });
 
     it('should throw error if file not found', async () => {
       fsReadFile.mockRejectedValue(new Error('not found'));
-      await expect(loadIndex()).rejects.toThrow('Index file ".ai-index.json" not found');
+      await expect(loadIndex()).rejects.toThrow('Index file "geniesh-index.json" not found');
     });
   });
 
@@ -95,7 +95,7 @@ describe('indexer', () => {
     it('should save index to file', async () => {
       const index = [{ file: 'test.js' }];
       await saveIndex(index);
-      expect(writeFile).toHaveBeenCalledWith('.ai-index.json', JSON.stringify(index), 'utf-8');
+      expect(writeFile).toHaveBeenCalledWith('geniesh-index.json', JSON.stringify(index), 'utf-8');
     });
   });
 

@@ -7,7 +7,7 @@ export {
   symbolRelationsToFiles,
 } from '../packages/kernel/src/relations.js';
 
-const RELATIONS_FILE = '.ai-relations.json';
+const RELATIONS_FILE = 'geniesh-relations.json';
 
 export async function tryLoadRelations() {
   try {

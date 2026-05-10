@@ -46,12 +46,12 @@ This file defines the conventions, preferences, and workflows for developing and
 ## Context Building (internal)
 
 - The `PRIORITY_NAMES` set in `context-builder.js` controls which files load first in RAG tier. `.github/instructions.md` and `README.md` are always loaded before other chunks.
-- BFS relation traversal (`.ai-relations.json`) replaces the old depth-capped transitive grep. No code changes should reintroduce depth-capped grep.
+- BFS relation traversal (`geniesh-relations.json`) replaces the old depth-capped transitive grep. No code changes should reintroduce depth-capped grep.
 - Context budget is 10,000 characters per turn. New context sources must respect this cap.
 
 ## Indexing
 
-- `.ai-index.json` and `.ai-relations.json` are generated artifacts — never commit them (they are in `.gitignore`).
+- `geniesh-index.json` and `geniesh-relations.json` are generated artifacts — never commit them (they are in `.gitignore`).
 - Re-run `ai index` when the codebase structure changes significantly.
 - The indexer builds both the RAG index and the relation graph in a single pass.
 - All hidden directories except `.github` are skipped during scanning. If a new dot-prefixed directory needs indexing, update `fs-utils.js`.

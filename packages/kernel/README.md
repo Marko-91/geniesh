@@ -55,8 +55,8 @@ async function mySearch(question, index, topK) {
 }
 
 // Load index + relations
-const index = JSON.parse(await readFile('.ai-index.json'));
-const relations = JSON.parse(await readFile('.ai-relations.json'));
+const index = JSON.parse(await readFile('geniesh-index.json'));
+const relations = JSON.parse(await readFile('geniesh-relations.json'));
 const allFiles = await scanDir(process.cwd());
 
 // Build context for a question
@@ -110,6 +110,6 @@ const relations = await buildRelations('./src');
 
 ## Architecture notes
 
-- The kernel never reads or writes `.ai-index.json` or `.ai-relations.json` — those are the adapter's concern.
+- The kernel never reads or writes `geniesh-index.json` or `geniesh-relations.json` — those are the adapter's concern.
 - `search()` is injected rather than imported so the kernel stays importable without an embedder module installed.
 - All file paths are relative to `process.cwd()` — the adapter should resolve them before passing to the kernel.
