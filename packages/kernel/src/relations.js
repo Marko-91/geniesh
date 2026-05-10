@@ -122,7 +122,7 @@ function extractImportPaths(content, filePath, knownFiles) {
   return resolved;
 }
 
-export async function buildRelations(dir) {
+export async function buildRelations(dir, prevMeta = {}, prevByFile = {}, prevByImports = {}) {
   const files = await scanDir(dir);
   const bySymbol = {};
   const byFile = {};
@@ -134,6 +134,14 @@ export async function buildRelations(dir) {
   for (const file of files) {
     const meta = await getFileMeta(file);
     if (meta) fileMeta[file] = meta;
+
+    // Unchanged file — carry forward old entries, skip I/O
+    if (prevMeta[file]?.hash === meta?.hash && Object.hasOwn(prevByFile, file)) {
+      byFile[file] = prevByFile[file];
+      if (Object.hasOwn(prevByImports, file)) byImports[file] = prevByImports[file];
+      continue;
+    }
+
     let content;
     try { content = await readFile(file); } catch { continue; }
 
@@ -141,15 +149,19 @@ export async function buildRelations(dir) {
     const fileEntry = symbols.map(metadataToV2);
     byFile[file] = fileEntry;
 
-    for (const sym of fileEntry) {
-      if (!Object.hasOwn(bySymbol, sym.name)) bySymbol[sym.name] = [];
-      bySymbol[sym.name].push({ file, kind: sym.kind, exported: sym.exported, lineRange: sym.lineRange });
-    }
-
     const imports = extractImportPaths(content, file, knownFiles);
     if (imports.length > 0) byImports[file] = imports;
   }
 
+  // Rebuild bySymbol from merged byFile
+  for (const [file, symbols] of Object.entries(byFile)) {
+    for (const sym of symbols) {
+      if (!Object.hasOwn(bySymbol, sym.name)) bySymbol[sym.name] = [];
+      bySymbol[sym.name].push({ file, kind: sym.kind, exported: sym.exported, lineRange: sym.lineRange });
+    }
+  }
+
+  // Rebuild byImporters from merged byImports
   for (const [file, importedFiles] of Object.entries(byImports)) {
     for (const impFile of importedFiles) {
       if (!Object.hasOwn(byImporters, impFile)) byImporters[impFile] = [];

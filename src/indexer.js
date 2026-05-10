@@ -1,13 +1,37 @@
 import { performance } from 'perf_hooks';
-import { readFile as fsReadFile, writeFile, unlink, access } from 'fs/promises';
+import { readFile as fsReadFile, writeFile, unlink, access, stat } from 'fs/promises';
 import { scanDir, readFile as readSourceFile } from './fs-utils.js';
 import { chunkFile } from './chunker.js';
 import { embed, embedBatch } from './embedder.js';
-import { buildRelations, saveRelations } from './relations.js';
+import { buildRelations, saveRelations, tryLoadRelations } from './relations.js';
 import ora from 'ora';
 
 const INDEX_FILE = 'geniesh-index.json';
 const CONCURRENCY = 4; // embed N files in parallel
+
+function fileHash(mtimeMs, size) {
+  return `${mtimeMs}-${size}`;
+}
+
+async function getCurrentFileMeta(files) {
+  const meta = {};
+  for (const file of files) {
+    try {
+      const s = await stat(file);
+      meta[file] = { mtime: s.mtimeMs, size: s.size, hash: fileHash(s.mtimeMs, s.size) };
+    } catch { continue; }
+  }
+  return meta;
+}
+
+async function tryLoadIndex() {
+  try {
+    const raw = await fsReadFile(INDEX_FILE, 'utf-8');
+    return JSON.parse(raw);
+  } catch {
+    return null;
+  }
+}
 
 // Simple concurrent pool — no extra deps needed
 async function concurrentMap(concurrency, items, fn) {
@@ -28,13 +52,10 @@ async function concurrentMap(concurrency, items, fn) {
 export async function buildIndex(dir) {
   const t0 = performance.now();
 
-  // Remove stale index so we always start fresh
-  try {
-    await unlink(INDEX_FILE);
-    console.log(`  ↺  Removed existing ${INDEX_FILE}`);
-  } catch {
-    // No existing index — that's fine
-  }
+  // Load previous index + relations for incremental merge
+  const oldIndex = await tryLoadIndex();
+  const oldRelations = await tryLoadRelations();
+  const prevMeta = oldRelations?.fileMeta || {};
 
   const scanSpinner = ora(`Scanning ${dir}…`).start();
   const files = await scanDir(dir);
@@ -46,12 +67,40 @@ export async function buildIndex(dir) {
     return [];
   }
 
+  // Compare current file hashes with previous — find changed/new files
+  const currentMeta = await getCurrentFileMeta(files);
+  const changedFiles = [];
+  const unchangedFiles = [];
+  for (const file of files) {
+    const cur = currentMeta[file];
+    const prev = prevMeta[file];
+    if (prev && prev.hash === cur?.hash) {
+      unchangedFiles.push(file);
+    } else {
+      changedFiles.push(file);
+    }
+  }
+
+  if (changedFiles.length === 0 && oldIndex) {
+    console.log(`  ● All ${files.length} file(s) unchanged — index is up to date`);
+    const totalSec = ((performance.now() - t0) / 1000).toFixed(1);
+    console.log(`  → Total: ${totalSec}s`);
+    return oldIndex;
+  }
+
+  const oldFileSet = new Set(files);
+  const changedSet = new Set(changedFiles);
+  const oldEntries = (oldIndex || []).filter(e => oldFileSet.has(e.file) && !changedSet.has(e.file));
+  const oldChunkCount = oldEntries.length;
+  console.log(`  ● ${unchangedFiles.length} file(s) unchanged (${oldChunkCount} chunks carried over), ${changedFiles.length} to index`);
+
+  // Process only changed/new files
   const embedStart = performance.now();
   let done = 0;
-  let totalChunks = 0;
-  const spinner = ora(`Indexing 0/${files.length} files…`).start();
+  let totalChunks = oldChunkCount;
+  const spinner = ora(`Indexing 0/${changedFiles.length} files…`).start();
 
-  const results = await concurrentMap(CONCURRENCY, files, async (filePath) => {
+  const results = await concurrentMap(CONCURRENCY, changedFiles, async (filePath) => {
     const t0 = performance.now();
     try {
       const content = await readSourceFile(filePath);
@@ -76,18 +125,19 @@ export async function buildIndex(dir) {
       done++;
       totalChunks += chunks.length;
       const ms = (performance.now() - t0).toFixed(0);
-      spinner.text = `Indexing ${done}/${files.length} files  (${ms}ms · ${filePath})`;
+      spinner.text = `Indexing ${done}/${changedFiles.length} files  (${ms}ms · ${filePath})`;
       return entries;
     } catch (err) {
       done++;
-      spinner.text = `Indexing ${done}/${files.length} files  (skipped: ${filePath} — ${err.message})`;
+      spinner.text = `Indexing ${done}/${changedFiles.length} files  (skipped: ${filePath} — ${err.message})`;
       return [];
     }
   });
 
-  const index = results.flat();
+  const newEntries = results.flat();
+  const index = [...oldEntries, ...newEntries];
   const embedSec = ((performance.now() - embedStart) / 1000).toFixed(1);
-  spinner.succeed(`Indexed ${done} files, ${totalChunks} chunks  (${embedSec}s)`);
+  spinner.succeed(`Indexed ${done} files, ${newEntries.length} new chunks  (${embedSec}s)`);
 
   const saveStart = performance.now();
   await saveIndex(index);
@@ -96,7 +146,7 @@ export async function buildIndex(dir) {
 
   const relStart = performance.now();
   try {
-    const relations = await buildRelations(dir);
+    const relations = await buildRelations(dir, prevMeta, oldRelations?.byFile || {}, oldRelations?.byImports || {});
     await saveRelations(relations);
     const symCount = Object.keys(relations.bySymbol).length;
     const relMs = (performance.now() - relStart).toFixed(0);
