@@ -3,10 +3,15 @@ import { dirname, join, extname } from 'path';
 import { scanDir, readFile } from './fs-utils.js';
 import { extractAllSymbolsWithMetadata } from './symbol-utils.js';
 
-const RESOLVE_EXTS = [
+const SOURCE_EXTS = new Set([
   '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',
   '.py', '.go', '.rs', '.java', '.cpp', '.c', '.h',
   '.rb', '.lisp', '.lsp', '.cl', '.cs', '.fs', '.fsx', '.vb',
+  '.swift', '.kt', '.scala', '.zig', '.lua',
+]);
+
+const RESOLVE_EXTS = [
+  ...SOURCE_EXTS,
   '.md', '.sh', '.php',
 ];
 
@@ -122,6 +127,15 @@ function extractImportPaths(content, filePath, knownFiles) {
   return resolved;
 }
 
+const SOURCE_FILE_CACHE = new Map();
+function isSourceFile(file) {
+  if (SOURCE_FILE_CACHE.has(file)) return SOURCE_FILE_CACHE.get(file);
+  const ext = extname(file).toLowerCase();
+  const result = SOURCE_EXTS.has(ext);
+  SOURCE_FILE_CACHE.set(file, result);
+  return result;
+}
+
 export async function buildRelations(dir, prevMeta = {}, prevByFile = {}, prevByImports = {}) {
   const files = await scanDir(dir);
   const bySymbol = {};
@@ -132,6 +146,8 @@ export async function buildRelations(dir, prevMeta = {}, prevByFile = {}, prevBy
   const knownFiles = new Set(files);
 
   for (const file of files) {
+    if (!isSourceFile(file)) continue;
+
     const meta = await getFileMeta(file);
     if (meta) fileMeta[file] = meta;
 

@@ -47,6 +47,44 @@ function findSourceFiles(allFiles) {
   return fallback;
 }
 
+const DOT_RE = /\./;
+
+function isDottedChain(sym) {
+  return DOT_RE.test(sym);
+}
+
+const STDLIB_METHODS = new Set([
+  'Promise.resolve', 'Promise.reject', 'Object.assign', 'Object.defineProperty',
+  'Object.keys', 'Object.values', 'Object.entries', 'Object.getPrototypeOf',
+  'Array.isArray', 'Array.from', 'Number.isFinite', 'Number.isNaN',
+  'toString', 'hasOwnProperty', 'isPrototypeOf', 'toLocaleString',
+  'as_ref', 'to_vec', 'clone', 'is_empty', 'as_bytes', 'into_path',
+  'starts_with', 'is_match', 'is_some', 'is_none', 'unwrap', 'as_str',
+  'to_string', 'as_byte', 'to_owned', 'into_iter',
+]);
+const STD_ARG_NAMES = new Set([
+  'val', 'buf', 'dst', 'src', 'tmp', 'idx', 'len', 'pos', 'ptr', 'fn', 'ch',
+  'input', 'output', 'result', 'options', 'config', 'data', 'value',
+  'params', 'args', 'opts', 'err', 'res', 'req', 'self', 'this',
+]);
+
+function isValidSymbol(sym, allSymbolKeys) {
+  if (isDottedChain(sym)) return false;
+  if (allSymbolKeys && allSymbolKeys.has(sym)) return true;
+  if (STDLIB_METHODS.has(sym)) return false;
+  if (STD_ARG_NAMES.has(sym)) return false;
+  if (/^[a-z]{1,3}$/.test(sym)) return false;
+  return true;
+}
+
+function cleanSymbols(symbols, allSymbolKeys) {
+  return symbols.filter(s => {
+    const valid = isValidSymbol(s, allSymbolKeys);
+    if (!valid) console.warn(`    Filtering out invalid symbol: "${s}"`);
+    return valid;
+  });
+}
+
 const MAX_FILES_IN_SUMMARY = 12;
 
 function summarize(relations, allFiles) {
@@ -86,6 +124,29 @@ function summarize(relations, allFiles) {
   return lines.join('\n');
 }
 
+function summarizeSymbolKeys(relations, allFiles, maxKeys = 200) {
+  const dirPrefix = allFiles.length > 0
+    ? allFiles[0].split(/[/\\]/)[0]
+    : null;
+  if (!dirPrefix) return '';
+  const repoFileSet = new Set(
+    Object.keys(relations.byFile).filter(f => f.startsWith(dirPrefix))
+  );
+  const defKinds = new Set(['class', 'function', 'variable']);
+  const defKeys = [];
+  const refKeys = [];
+  for (const [k, entries] of Object.entries(relations.bySymbol)) {
+    const inRepo = entries.some(e => e.file && repoFileSet.has(e.file));
+    if (!inRepo) continue;
+    const isDef = entries.some(e => e.file && repoFileSet.has(e.file) && defKinds.has(e.kind));
+    (isDef ? defKeys : refKeys).push(k);
+  }
+  defKeys.sort();
+  refKeys.sort();
+  const combined = [...defKeys, ...refKeys.slice(0, Math.max(0, maxKeys - defKeys.length))];
+  return combined.slice(0, maxKeys).join('\n');
+}
+
 function extractJSON(text) {
   const jsonMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
   const str = jsonMatch ? jsonMatch[1] : text;
@@ -97,7 +158,9 @@ function extractJSON(text) {
 
 const SYSTEM_PROMPT = `You are a senior developer exploring a new codebase. Generate a benchmark to test how well a code retrieval system can find relevant context for your questions.
 
-SYMBOL VALIDATION RULES — READ CAREFULLY:
+CRITICAL RULE — ABSOLUTELY FORBIDDEN:
+You MUST NEVER use dotted/chained symbols like "Error.Errors", "self.config.clone", "Promise.resolve", "result.then", "Object.assign", "inst.clone", "builder.build", "ctx.seen.set", "util.slugify", "input.normalize", "payload.issues.push", "checks.map", "regexes.map", "vals.every", "results.push", "matches.push", "errs.push", "range.clone", "parent.clone".
+Every expected_symbols entry MUST be a SINGLE identifier — no dots, no property chains.
 
 The code retrieval system can ONLY find symbols that match these regex patterns:
 1. PascalCase: [A-Z][a-z]+(?:[A-Z][a-z0-9]+)+   e.g. "ZodError", "MethodView", "FlaskClient"
@@ -105,40 +168,37 @@ The code retrieval system can ONLY find symbols that match these regex patterns:
 3. snake_case: [a-z][a-z0-9]+_[a-z][a-z0-9_]+    e.g. "add_url_rule", "from_pyfile", "set_charset"
 4. UPPER_SNAKE: [A-Z]{2,}(?:_[A-Z0-9]+)+         e.g. "MAX_RETRY", "DEFAULT_PORT"
 5. Single PascalCase word: [A-Z][a-z]{2,}         e.g. "View", "Route", "New", "Get", "Post"
-6. Dotted lowercase (rare): [a-z][a-z0-9]+(?:\.[a-z][a-z0-9]+)+  e.g. "res.render", "module.exports"
 
-INVALID patterns (NEVER use these as expected_symbols):
-- Standard library methods: "Promise.resolve", "Object.defineProperty", "Number.isFinite", "Array.isArray", "toString", "hasOwnProperty"
-- Trait/interface methods: "as_ref", "to_vec", "clone", "is_empty", "as_bytes", "into_path", "starts_with", "is_match"
-- Property access chains: "self.config.clone", "this.value", "builder.build", "core.clone", "inst.parse", "inst.apply"
-- Variable property access: "payload.issues.push", "checks.unshift", "regexes.map", "vals.every", "results.push"
-- Single lowercase words that are NOT in the symbol tree: "val", "buf", "dst", "src", "tmp", "idx", "len", "pos", "ptr", "fn", "ch"
-- Common parameter/variable names: "input", "output", "result", "options", "config", "data", "value", "params", "args", "opts"
+ALSO FORBIDDEN:
+- Standard library methods: toString, hasOwnProperty, isPrototypeOf
+- Single-letter or 2-3 char lowercase: val, buf, dst, src, tmp, idx, len, pos, ptr, fn, ch
+- Common parameter names: input, output, result, options, config, data, value, params, args, opts
 
 GOOD expected_symbols examples: ["createApplication", "compileETag", "handle", "use", "render", "View", "add_url_rule", "safeParse", "parseAsync", "ZodError"]
-BAD expected_symbols examples: ["Promise.resolve", "as_ref", "self.config.clone", "payload.issues.push", "input.value", "opts.name"]
+BAD expected_symbols examples: ["Error.Errors", "self.config.clone", "Promise.resolve", "result.then", "Object.assign", "as_ref", "clone", "to_vec", "toString", "input.value", "opts.name"]
 
 TASK:
 Generate 12-15 questions a REAL developer would ask when learning this codebase.
-- "How does X work?" (requires reading 2-4 related files)
-- "What happens when I call Y?" (follows the call chain)
-- "How is Z configured?" (cross-file configuration flow)
 
 Each entry:
 - "name": short label
 - "question": natural developer question
 - "expected_files": 2-4 file paths matching EXACTLY the paths in the tree
-- "expected_symbols": 2-5 symbol names matching the VALID regex patterns above
+- "expected_symbols": 2-5 symbol names — ALL must be single identifiers (NO DOTS) from the ALL SYMBOLS list or tree below
 
 RULES:
 - expected_files paths must match EXACTLY the paths shown in the tree
-- expected_symbols MUST be from the tree AND match valid regex patterns
+- EVERY expected_symbol MUST appear in the ALL SYMBOLS list below
+- NEVER include dotted chains like "self.config.clone" or "Error.Errors"
 - Cover different parts of the codebase
 - Return ONLY a JSON array — no commentary
-- The question must be answerable from code, not general knowledge
 
 Example entry:
-{"name":"Request pipeline","question":"How does a request flow through middleware to a route handler?","expected_files":["lib/express.js","lib/application.js"],"expected_symbols":["createApplication","handle","use"]}`;
+{"name":"Request pipeline","question":"How does a request flow through middleware to a route handler?","expected_files":["lib/express.js","lib/application.js"],"expected_symbols":["createApplication","handle","use"]}
+
+ALL SYMBOLS IN CODEBASE (use ONLY these as expected_symbols):`;
+
+// appended: symbols list + "Generate the benchmark JSON array now"
 
 export async function generateBenchmark(benchmarkFile, dir, model) {
   const allFiles = await scanDir(dir);
@@ -149,8 +209,10 @@ export async function generateBenchmark(benchmarkFile, dir, model) {
   const relations = await loadRelations();
 
   const summary = summarize(relations, allFiles);
+  const symbolKeys = summarizeSymbolKeys(relations, allFiles);
+  const allSymbolKeys = new Set(symbolKeys.split('\n').filter(Boolean));
 
-  const prompt = `${SYSTEM_PROMPT}\n\nCODEBASE SUMMARY:\n${summary}\n\nGenerate the benchmark JSON array now. Return ONLY the JSON array.`;
+  const prompt = `${SYSTEM_PROMPT}\n${symbolKeys}\n\nCODEBASE SUMMARY (file tree with symbols):\n${summary}\n\nGenerate the benchmark JSON array now. Return ONLY the JSON array. Mark sure ALL expected_symbols are from the ALL SYMBOLS list above.`;
 
   const response = await runGenerate(prompt, model);
 
@@ -165,6 +227,7 @@ export async function generateBenchmark(benchmarkFile, dir, model) {
     throw new Error('LLM returned empty or invalid benchmark array');
   }
 
+  let cleaned = 0;
   const valid = benchmarks.filter(bm => {
     if (!bm.name || !bm.question || !bm.expected_files || !bm.expected_symbols) {
       console.warn(`  Skipping invalid entry (missing fields): ${bm.name || 'unnamed'}`);
@@ -178,8 +241,16 @@ export async function generateBenchmark(benchmarkFile, dir, model) {
       console.warn(`  Skipping "${bm.name}" — no expected_symbols`);
       return false;
     }
+    const before = bm.expected_symbols.length;
+    bm.expected_symbols = cleanSymbols(bm.expected_symbols, allSymbolKeys);
+    cleaned += before - bm.expected_symbols.length;
+    if (bm.expected_symbols.length < 1) {
+      console.warn(`  Skipping "${bm.name}" — all symbols filtered out`);
+      return false;
+    }
     return true;
   });
+  if (cleaned > 0) console.warn(`  Filtered out ${cleaned} invalid symbol(s) across all entries`);
   if (valid.length < 5) {
     throw new Error(`Only ${valid.length} valid benchmarks — need at least 5`);
   }

@@ -1,14 +1,14 @@
-import { basename, extname, relative } from 'path';
+import { basename, extname, relative, isAbsolute } from 'path';
 import { grepFiles, clearGrepCache } from './grep.js';
 import { extractSymbols } from './symbol-utils.js';
 import { readFile } from './fs-utils.js';
 
-const CONTEXT_BUDGET     = 10000;
+const CONTEXT_BUDGET     = 15000;
 const MAX_PER_FILE       = Math.floor(CONTEXT_BUDGET * 0.5);
 const ROUND_0_CAP        = Math.floor(CONTEXT_BUDGET * 0.7);
 const MAX_CHAT_TURNS     = 8;
 const RAG_TOP_K          = 8;
-const GREP_CONTEXT_LINES = 15;
+const GREP_CONTEXT_LINES = 10;
 const RAG_TOP_FILES      = 12;
 
 const PRIORITY_NAMES = new Set([
@@ -110,9 +110,15 @@ function fileTier(filePath) {
 }
 
 function dirScore(filePath) {
-  if (HIGH_PRIORITY_DIRS.test(filePath)) return -1;
   if (LOW_PRIORITY_DIRS.test(filePath)) return 1;
+  if (HIGH_PRIORITY_DIRS.test(filePath)) return -1;
   return 0;
+}
+
+function isDefKind(relations, sym, file) {
+  const entries = relations.bySymbol[sym];
+  if (!entries) return false;
+  return entries.some(e => (e.file === file || e.file?.replace(/\\/g, '/') === file?.replace(/\\/g, '/')) && ['class', 'function', 'variable'].includes(e.kind));
 }
 
 function sortedIndex(index) {
@@ -297,6 +303,18 @@ export async function buildChatContext(question, index, allFiles, relations, fil
   const seenFiles = new Set();
   let bfsRound = 0;
 
+  const SOURCE_EXTS = new Set(['.js','.ts','.tsx','.jsx','.mjs','.cjs','.py','.go','.rs','.java','.cpp','.c','.h','.rb','.php','.cs','.fs','.fsx','.vb','.lisp','.lsp','.cl']);
+
+  function bestKind(name) {
+    const metas = relations?.bySymbol[name];
+    if (!metas) return 'reference';
+    const kinds = new Set(metas.map(m => m.kind));
+    if (kinds.has('class')) return 'class';
+    if (kinds.has('function')) return 'function';
+    if (kinds.has('variable')) return 'variable';
+    return 'reference';
+  }
+
   while (used.value < budget && frontier.length > 0) {
     const roundCap = bfsRound === 0 ? Math.min(ROUND_0_CAP, budget) : budget;
     if (used.value >= roundCap) break;
@@ -339,17 +357,25 @@ export async function buildChatContext(question, index, allFiles, relations, fil
       }
 
       for (const { file, windows } of results) {
-        groups.push({ sym, file, windows, taken: 0 });
+        const normFile = isAbsolute(file) ? relative(process.cwd(), file) : file;
+        groups.push({ sym, file: normFile, windows, taken: 0 });
       }
     }
 
-    groups.sort((a, b) => dirScore(a.file) - dirScore(b.file));
+    groups.sort((a, b) => {
+      const aDef = (relations && bfsRound === 0) ? isDefKind(relations, a.sym, a.file) : false;
+      const bDef = (relations && bfsRound === 0) ? isDefKind(relations, b.sym, b.file) : false;
+      if (aDef !== bDef) return aDef ? -1 : 1;
+      return dirScore(a.file) - dirScore(b.file);
+    });
 
+    const MAX_WINDOWS_PER_ROUND = 5;
     let anyAdded = true;
-    while (used.value < roundCap && anyAdded) {
+    while (used.value < roundCap && anyAdded && hitsThisRound < MAX_WINDOWS_PER_ROUND) {
       anyAdded = false;
       for (const group of groups) {
         if (used.value >= roundCap) break;
+        if (hitsThisRound >= MAX_WINDOWS_PER_ROUND) break;
         if (group.taken >= group.windows.length) continue;
 
         const win = group.windows[group.taken++];
@@ -376,9 +402,11 @@ export async function buildChatContext(question, index, allFiles, relations, fil
     if (used.value < budget && relations && hitFiles.length > 0) {
       const newSymbols = [];
       const seenRelFiles = new Set();
+
       for (const file of hitFiles) {
         const fileSymbols = relations.byFile[file];
         if (!fileSymbols) continue;
+
         for (const entry of fileSymbols) {
           const sym = entry.name || entry;
           if (!seenSymbols.has(sym) && !newSymbols.includes(sym)) {
@@ -390,16 +418,21 @@ export async function buildChatContext(question, index, allFiles, relations, fil
           const sym = entry.name || entry;
           const symFiles = relations.bySymbol[sym];
           if (!symFiles) continue;
+          let symCap = 0;
           for (const ref of symFiles) {
+            if (symCap >= 4) break;
             const relatedFile = ref.file || ref;
             if (seenFiles.has(relatedFile) || seenRelFiles.has(relatedFile)) continue;
+            if (!SOURCE_EXTS.has(extname(relatedFile).toLowerCase())) continue;
             seenRelFiles.add(relatedFile);
             const relatedSyms = relations.byFile[relatedFile];
             if (!relatedSyms) continue;
             for (const rentry of relatedSyms) {
+              if (symCap >= 4) break;
               const rsym = rentry.name || rentry;
               if (!seenSymbols.has(rsym) && !newSymbols.includes(rsym)) {
                 newSymbols.push(rsym);
+                symCap++;
               }
             }
           }
@@ -409,6 +442,7 @@ export async function buildChatContext(question, index, allFiles, relations, fil
         if (imported) {
           for (const impFile of imported) {
             if (seenFiles.has(impFile) || seenRelFiles.has(impFile)) continue;
+            if (!SOURCE_EXTS.has(extname(impFile).toLowerCase())) continue;
             seenRelFiles.add(impFile);
             const impSyms = relations.byFile[impFile];
             if (!impSyms) continue;
@@ -425,6 +459,7 @@ export async function buildChatContext(question, index, allFiles, relations, fil
         if (importers) {
           for (const impFile of importers) {
             if (seenFiles.has(impFile) || seenRelFiles.has(impFile)) continue;
+            if (!SOURCE_EXTS.has(extname(impFile).toLowerCase())) continue;
             seenRelFiles.add(impFile);
             const impSyms = relations.byFile[impFile];
             if (!impSyms) continue;
@@ -443,14 +478,16 @@ export async function buildChatContext(question, index, allFiles, relations, fil
       const symbolPriority = (name) => {
         const metas = relations.bySymbol[name];
         if (!metas || metas.length === 0) return 99999;
-        const m = metas[0];
+        const kind = bestKind(name);
         const qScore = queryRelevanceScore(name, queryTerms);
-        return -qScore * 1000000 + (m.exported ? 0 : 100000) + (kindOrder[m.kind] ?? 99) * 1000;
+        const uniqFiles = new Set(metas.map(m => m.file)).size;
+        const bridgeBonus = -Math.min(uniqFiles, 20) * 10;
+        return -qScore * 1000000 + (kindOrder[kind] ?? 99) * 1000 + bridgeBonus;
       };
 
       newSymbols.sort((a, b) => symbolPriority(a) - symbolPriority(b));
 
-      const MAX_FRONTIER = 20;
+      const MAX_FRONTIER = 120;
       const truncated = newSymbols.slice(0, MAX_FRONTIER);
       if (newSymbols.length > 0) {
         log.push(`  [bfs ${bfsRound}→${bfsRound + 1}] discovered: ${truncated.slice(0, 8).join(', ')}${newSymbols.length > 8 ? ` (+${newSymbols.length - 8})` : ''}`);

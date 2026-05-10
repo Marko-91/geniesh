@@ -41,3 +41,10 @@
 credentials/*
 
 .reports
+
+# Cloned benchmark repos
+/express/
+/flask/
+/gin/
+/ripgrep/
+/zod/

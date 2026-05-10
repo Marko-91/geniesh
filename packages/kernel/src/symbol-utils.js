@@ -134,10 +134,30 @@ const FUNCTION_DEF_RE = /\b(function|const|let|var)\s+([a-z]{2,})(?:\s*[=(])/g;
 
 const PROPERTY_FN_RE = /(?:\.|['"]?:?\s*)([a-z]{2,})\s*[:=]\s*(?:async\s+)?function\b/g;
 
+const KIND_PREFERENCE = ['class', 'function', 'variable', 'reference'];
+
+function bestKindFromSet(kinds) {
+  for (const k of KIND_PREFERENCE) {
+    if (kinds.has(k)) return k;
+  }
+  return 'reference';
+}
+
 export function extractAllSymbolsWithMetadata(content) {
   const lines = content.split('\n');
-  const seen = new Set();
-  const result = [];
+  const allSyms = new Map();
+
+  const addMatch = (name, lineIndex, kind, exported) => {
+    if (DOMAIN_RE.test(name) || isEnglishNoise(name)) return;
+    if (!allSyms.has(name)) {
+      allSyms.set(name, { kinds: new Set(), exported: false, firstMatchLine: lineIndex, firstDefLine: null });
+    }
+    const entry = allSyms.get(name);
+    entry.kinds.add(kind);
+    if (exported) entry.exported = true;
+    const isDef = kind === 'class' || kind === 'function' || kind === 'variable';
+    if (isDef && entry.firstDefLine === null) entry.firstDefLine = lineIndex;
+  };
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -146,35 +166,29 @@ export function extractAllSymbolsWithMetadata(content) {
 
     for (const m of matches) {
       const name = m[1];
-      if (seen.has(name) || DOMAIN_RE.test(name) || isEnglishNoise(name)) continue;
-      seen.add(name);
-
-      const kind = findSymbolKind(line, name);
-      const exported = isExported(line, name);
-      const lineRange = guessLineRange(lines, i, kind);
-
-      result.push({ name, kind, exported, lineRange });
+      addMatch(name, i, findSymbolKind(line, name), isExported(line, name));
     }
 
     FUNCTION_DEF_RE.lastIndex = 0;
     let fm;
     while ((fm = FUNCTION_DEF_RE.exec(line)) !== null) {
-      const name = fm[2];
-      if (seen.has(name) || DOMAIN_RE.test(name) || isEnglishNoise(name)) continue;
-      seen.add(name);
-      result.push({ name, kind: 'function', exported: isExported(line, name), lineRange: [i + 1, i + 1] });
+      addMatch(fm[2], i, 'function', isExported(line, fm[2]));
     }
 
     PROPERTY_FN_RE.lastIndex = 0;
     let pm;
     while ((pm = PROPERTY_FN_RE.exec(line)) !== null) {
-      const name = pm[1];
-      if (seen.has(name) || DOMAIN_RE.test(name) || isEnglishNoise(name)) continue;
-      seen.add(name);
-      result.push({ name, kind: 'function', exported: isExported(line, name), lineRange: [i + 1, i + 1] });
+      addMatch(pm[1], i, 'function', isExported(line, pm[1]));
     }
   }
 
+  const result = [];
+  for (const [name, entry] of allSyms) {
+    const kind = bestKindFromSet(entry.kinds);
+    const matchLine = entry.firstDefLine !== null ? entry.firstDefLine : entry.firstMatchLine;
+    const lineRange = guessLineRange(lines, matchLine, kind);
+    result.push({ name, kind, exported: entry.exported, lineRange });
+  }
   return result;
 }
 
