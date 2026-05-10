@@ -1,20 +1,24 @@
-# Pre-pulls Alpine base image using classic engine to avoid BuildKit
-# zstd extraction issues on some Windows Docker installations.
-# Also cleans up any previous corrupt geniesh-base image.
+# Downloads Alpine minirootfs directly from Alpine's CDN (gzip, not zstd)
+# and imports it as a local Docker image — completely bypassing Docker Hub.
 
-Write-Host "=== Cleaning old corrupt images ==="
+$RootfsUrl = "https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz"
+$ImageName = "geniesh-base:latest"
+$Tarball = "$env:TEMP\alpine-rootfs.tar.gz"
+
+Write-Host "=== Cleaning old images ==="
 docker rmi geniesh-base:latest -f 2>$null
 
-$Image = "alpine:3.20"
-Write-Host "=== Pulling $Image (classic engine) ==="
-docker pull --platform=linux/amd64 $Image 2>&1
-if (-not $?) {
-    Write-Host "Trying without --platform..."
-    docker pull $Image 2>&1
-    if (-not $?) { throw "Pull failed" }
-}
+Write-Host "=== Downloading Alpine minirootfs (~3 MB, gzip) ==="
+curl.exe -L -o $Tarball $RootfsUrl
+if (-not $?) { throw "Download failed" }
 
-Write-Host "=== Ready ==="
-docker images $Image
+Write-Host "=== Importing as Docker image '$ImageName' ==="
+docker import $Tarball $ImageName
+if (-not $?) { throw "Import failed" }
+
+Remove-Item $Tarball -Force
+
+Write-Host "=== Image ready ==="
+docker images $ImageName
 Write-Host ""
 Write-Host "Now run: docker compose build geniesh --no-cache && docker compose up -d"

@@ -37,9 +37,9 @@ Two containers defined in `docker/docker-compose.yml`:
 | Container | Base image | Role | Memory limit |
 |-----------|-----------|------|-------------|
 | `geniesh-ollama` | `ollama/ollama:latest` | LLM inference server | 16 GB |
-| `geniesh-worker` | `alpine:3.20` | geniesh CLI + tools | 8 GB |
+| `geniesh-worker` | `geniesh-base:latest` (locally-imported Alpine rootfs) | geniesh CLI + tools | 8 GB |
 
-Alpine is used as the base because its Docker layers use gzip compression (not zstd), avoiding a known extraction issue on some Windows Docker Desktop installations. The `setup.ps1`/`setup.sh` script pre-pulls the image using the classic engine so BuildKit never touches the zstd code path.
+The `geniesh-worker` image is built from a **locally-imported Alpine rootfs** — downloaded directly from Alpine's CDN as a gzip-compressed tarball and imported via `docker import`. This completely bypasses Docker Hub's image distribution pipeline and its zstd-compressed layers.
 
 - `ollama` runs the model server; `geniesh` connects via `OLLAMA_HOST=http://ollama:11434`.
 - Models persist in a named volume (`ollama-data`) — no re-download on restart.
@@ -74,8 +74,8 @@ docker compose down -v
 |------|---------|
 | `Dockerfile` | Builds geniesh worker image on top of Alpine |
 | `docker-compose.yml` | Orchestrates ollama + geniesh services |
-| `setup.ps1` | Pre-pulls Alpine image (Windows) |
-| `setup.sh` | Pre-pulls Alpine image (Linux/macOS) |
+| `setup.ps1` | Downloads + imports Alpine rootfs (Windows) |
+| `setup.sh` | Downloads + imports Alpine rootfs (Linux/macOS) |
 | `start.sh` | One-command build & launch (Linux/macOS) |
 | `pull-models.sh` | Pulls qwen3-coder + nomic-embed-text |
 

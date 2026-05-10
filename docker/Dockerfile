@@ -1,7 +1,8 @@
-# Alpine base — smaller, faster builds, no zstd compression issues on Windows.
-FROM alpine:3.20
+# Uses a locally-imported Alpine rootfs to avoid Docker Hub's zstd layers.
+# Run docker/setup.ps1 first to create geniesh-base:latest.
+FROM geniesh-base:latest
 
-# Install Node.js 20, system deps, and Ollama CLI
+# Install Node.js 20, system deps, Ollama CLI
 RUN apk add --no-cache \
     nodejs \
     npm \
