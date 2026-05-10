@@ -1,6 +1,8 @@
-# Uses a locally-imported Alpine rootfs to avoid Docker Hub's zstd layers.
-# Run docker/setup.ps1 first to create geniesh-base:latest.
-FROM geniesh-base:latest
+# FROM scratch + ADD tarball = zero Docker Hub pulls, zero zstd layers.
+# Docker's ADD uses Go's built-in tar/gzip — no containerd layer extraction.
+# Run docker/setup.ps1 first to download alpine-minirootfs.tar.gz.
+FROM scratch
+ADD alpine-minirootfs.tar.gz /
 
 # Install Node.js 20, system deps, Ollama CLI
 RUN apk add --no-cache \
