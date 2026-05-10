@@ -55,8 +55,19 @@ Run geniesh (plus Ollama) in a single Docker compose stack — no manual Node.js
 
 ### Quick start
 
-```bash
+```powershell
+# Windows
 cd docker
+.\setup.ps1
+docker compose build geniesh
+docker compose up -d
+docker compose exec geniesh /bin/bash
+```
+
+```bash
+# Linux / macOS
+cd docker
+chmod +x setup.sh && ./setup.sh
 docker compose build geniesh
 docker compose up -d
 docker compose exec geniesh /bin/bash
@@ -71,7 +82,9 @@ Two containers defined in `docker/docker-compose.yml`:
 | Container | Base image | Role | Memory limit |
 |-----------|-----------|------|-------------|
 | `geniesh-ollama` | `ollama/ollama:latest` | LLM inference server | 16 GB |
-| `geniesh-worker` | `ubuntu:22.04` + Node.js 20 | geniesh CLI + tools | 8 GB |
+| `geniesh-worker` | `geniesh-base:latest` (locally-imported Debian rootfs) | geniesh CLI + tools | 8 GB |
+
+The `geniesh-worker` image is built from a **locally-imported Debian rootfs** (downloaded via `setup.ps1`/`setup.sh` as a gzip/xz tarball) to avoid Docker Hub's zstd-compressed image layers, which some Windows Docker Desktop installations cannot extract.
 
 - `ollama` runs the model server; `geniesh` connects via `OLLAMA_HOST=http://ollama:11434`.
 - Models persist in a named volume (`ollama-data`) — no re-download on restart.

@@ -1,33 +1,32 @@
-# --platform forces the linux/amd64 manifest which typically uses gzip layers,
-# avoiding a known zstd extraction issue on Windows Docker Desktop.
-FROM --platform=linux/amd64 node:20-bookworm-slim AS base
+# Builds from a locally-imported Debian rootfs to avoid Docker Hub zstd layers.
+# Run docker/setup.ps1 (Windows) or docker/setup.sh (Linux/macOS) first.
+FROM geniesh-base:latest
 
-# System deps (git for cloning benchmark repos, build-essential for native modules)
+# Install Node.js 20
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    ca-certificates \
-    build-essential \
+    curl ca-certificates gnupg \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Ollama CLI (client only — server runs as separate container)
-RUN apt-get update && apt-get install -y --no-install-recommends curl gnupg \
-    && rm -rf /var/lib/apt/lists/* \
-    && curl -fsSL https://ollama.com/install.sh | sh \
+# System deps
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Ollama CLI
+RUN curl -fsSL https://ollama.com/install.sh | sh \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace/geniesh
 
-# Copy package manifests first (Docker layer caching)
 COPY package.json package-lock.json ./
 COPY packages/kernel/package.json ./packages/kernel/package.json
 RUN mkdir -p packages/kernel && npm install
 
-# Copy rest of source
 COPY . .
-
-# Install the CLI globally
 RUN npm link
 
 WORKDIR /workspace
-
 CMD ["/bin/bash", "-l"]
