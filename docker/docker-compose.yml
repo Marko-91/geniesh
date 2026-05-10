@@ -23,6 +23,7 @@ services:
           memory: 8G
 
   geniesh:
+    platform: linux/amd64
     build:
       context: ..
       dockerfile: docker/Dockerfile

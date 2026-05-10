@@ -1,4 +1,6 @@
-FROM node:20-bookworm-slim AS base
+# --platform forces the linux/amd64 manifest which typically uses gzip layers,
+# avoiding a known zstd extraction issue on Windows Docker Desktop.
+FROM --platform=linux/amd64 node:20-bookworm-slim AS base
 
 # System deps (git for cloning benchmark repos, build-essential for native modules)
 RUN apt-get update && apt-get install -y --no-install-recommends \
