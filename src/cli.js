@@ -18,6 +18,8 @@ import { runEval, formatEvalResults } from './eval.js';
 import { generateBenchmark } from './benchmark-gen.js';
 import { runSelfImprove } from './autoimprove/auto-improve.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
+import { extractUrls, fetchWebContent } from './web-fetch.js';
+import { webSearch, formatSearchResults } from './web-search.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
 import { extractSymbols } from './symbol-utils.js';
 import { scanDir, extractFileRefs } from './fs-utils.js';
@@ -113,7 +115,7 @@ program
           'You are a senior software engineer.\n\n' +
           'Rules:\n' +
           '- Every claim about code MUST cite the exact file and line number\n' +
-          '  from the provided context above. If the file or line is not in the\n' +
+          '  from the codebase_context above. If the file or line is not in the\n' +
           '  context, do not cite it.\n' +
           '- If you cannot cite it, it is not in the code — state that clearly.\n' +
           '- You may use general knowledge for analysis and suggestions, but preface\n' +
@@ -121,7 +123,10 @@ program
           '  knows it is not from the code.\n' +
           '- Never invent file names, function names, or line numbers.\n' +
           '- Prefer simple, minimal changes. Do not propose additional abstraction\n' +
-          '  layers unless the existing code demonstrably fails at its task.',
+          '  layers unless the existing code demonstrably fails at its task.\n' +
+          '- If the user message contains a [Web page content] section,\n' +
+          '  the content was fetched from a URL they asked about. Use it to answer\n' +
+          '  their question — it is as authoritative as the codebase context.',
       },
     ];
 
@@ -146,6 +151,8 @@ program
     console.log('\x1b[90m   • Ask about specific symbols:                      "how does Router.handle work?"\x1b[0m');
     console.log('\x1b[90m   • Use concrete function/method names for AST graph\x1b[0m');
     if (graph) console.log('\x1b[90m   • Budget is ~32k tok default (--budget <chars> to override)\x1b[0m');
+    console.log('\x1b[90m   • Paste a URL to fetch its content as context\x1b[0m');
+    console.log('\x1b[90m   • /search <query> to search the web via DuckDuckGo\x1b[0m');
     console.log('\x1b[90m   • Type \x1b[33mexit\x1b[90m or Ctrl+C to quit\x1b[0m\n');
 
     process.on('SIGINT', () => {
@@ -153,6 +160,9 @@ program
       rl.close();
       process.exit(0);
     });
+
+    // Track last fetched web content so it persists across turns
+    let lastWebContent = '';
 
     while (true) {
       let userInput;
@@ -167,6 +177,78 @@ program
         rl.close();
         console.log('Bye!');
         break;
+      }
+
+      // ─ /search command ──────────────────────────────────────────────────────────
+      let searchResultsText = '';
+      let searchFollowUp = '';
+      const searchMatch = trimmed.match(/^\/search\s+(.+)/s);
+      if (searchMatch) {
+        const rest = searchMatch[1].trim();
+        // Support: /search "query" optional follow-up question
+        const quoted = rest.match(/^"([^"]+)"\s*(.*)/s);
+        const query = quoted ? quoted[1] : rest;
+        searchFollowUp = quoted ? quoted[2].trim() : '';
+        const searchSpinner = ora({ text: `Searching "${query}"…`, color: 'yellow' }).start();
+        try {
+          const results = await webSearch(query, 5);
+          if (results.length === 0) {
+            searchSpinner.fail('No search results');
+          } else {
+            searchSpinner.succeed(`Found ${results.length} results for "${query}"`);
+            searchResultsText = formatSearchResults(results);
+            // Fetch the top 2 result pages
+            const topUrls = results.slice(0, 2).map(r => r.url);
+            const fetchSpinner = ora({ text: `Fetching ${topUrls.length} result page(s)…`, color: 'yellow' }).start();
+            const fetchResults = await Promise.allSettled(topUrls.map(url => fetchWebContent(url)));
+            const fetchParts = [];
+            for (let i = 0; i < topUrls.length; i++) {
+              const r = fetchResults[i];
+              if (r.status === 'fulfilled') {
+                fetchParts.push(r.value);
+              }
+            }
+            if (fetchParts.length > 0) {
+              fetchSpinner.succeed(`Fetched ${fetchParts.length} page(s)`);
+              searchResultsText += '\n\n--- Fetched pages ---\n' + fetchParts.join('\n\n---\n\n');
+            } else {
+              fetchSpinner.info('No pages fetched');
+            }
+            lastWebContent = searchResultsText;
+          }
+        } catch (err) {
+          searchSpinner.fail(`Search failed: ${err.message}`);
+        }
+      }
+
+      // ─ Web fetch ──────────────────────────────────────────────────────────────
+      let webContent = '';
+      const urls = extractUrls(trimmed);
+      if (urls.length > 0) {
+        const wfSpinner = ora({ text: `Fetching ${urls.length} URL(s)…`, color: 'yellow' }).start();
+        const results = await Promise.allSettled(urls.map(url => fetchWebContent(url)));
+        const parts = [];
+        for (let i = 0; i < urls.length; i++) {
+          const r = results[i];
+          if (r.status === 'fulfilled') {
+            parts.push(r.value);
+            wfSpinner.text = `Fetched ${(r.value.length / 1000).toFixed(1)}k from ${urls[i]}`;
+          } else {
+            wfSpinner.text = `Failed: ${urls[i]} (${r.reason.message})`;
+          }
+        }
+        const totalKb = (parts.reduce((s, p) => s + p.length, 0) / 1000).toFixed(1);
+        wfSpinner.succeed(`Fetched ${totalKb}k from ${urls.length} URL(s)`);
+        if (parts.length > 0) {
+          webContent = parts.join('\n\n---\n\n');
+          lastWebContent = webContent;
+        }
+      } else if (searchResultsText) {
+        webContent = searchResultsText;
+      } else if (lastWebContent) {
+        webContent = lastWebContent;
+        const kb = (lastWebContent.length / 1000).toFixed(1);
+        process.stderr.write(`\x1b[90m(using ${kb}k from previous fetch)\x1b[0m\n`);
       }
 
       // ─ Build context ─────────────────────────────────────────────────────────
@@ -204,11 +286,25 @@ program
         ctxSpinner.warn(`Context build failed (${err.message}), falling back to plain message`);
       }
 
-      const content = contextText
-        ? `<codebase_context>\n${contextText}\n</codebase_context>\n\nQuestion: ${trimmed}`
+      // Strip command prefix and fetched URLs from question
+      let questionText = searchFollowUp || trimmed;
+      if (webContent) {
+        if (!searchFollowUp) {
+          const searchCmd = questionText.match(/^\/search\s+(.+)/s);
+          if (searchCmd) {
+            questionText = searchCmd[1].trim();
+          }
+        }
+        for (const url of extractUrls(trimmed)) {
+          questionText = questionText.replace(url, 'the fetched page');
+        }
+        questionText = questionText.replace(/\s+/g, ' ').trim();
+      }
+
+      const content = webContent || contextText
+        ? `${contextText ? `[Codebase context]\n${contextText}\n\n` : ''}${webContent ? `[Web page content]\n${webContent}\n\n` : ''}Read the [Web page content] above and answer using both the web page content and the codebase context.\n\nQuestion: ${questionText}`
         : trimmed;
 
-      // Apply sliding window before pushing new turn
       applySlideWindow(messages);
       messages.push({ role: 'user', content });
 
