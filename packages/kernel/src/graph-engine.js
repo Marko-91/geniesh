@@ -326,7 +326,7 @@ async function statSafe(file) {
   try { return await stat(file); } catch { return null; }
 }
 
-export async function buildGraph(dir, files, prevGraph = null) {
+export async function buildGraph(dir, files, prevGraph = null, onProgress = null) {
   await ensureTSParsers();
 
   const graph = new CodeGraph();
@@ -334,36 +334,45 @@ export async function buildGraph(dir, files, prevGraph = null) {
   const prevHashes = prevGraph ? prevGraph.fileHashes : new Map();
   const parsed = [];
   const unchangedFiles = [];
+  const total = files.length;
+  let done = 0;
 
   for (const file of files) {
     const ext = extname(file).toLowerCase();
-    if (!SOURCE_EXTS.has(ext)) continue;
+    if (!SOURCE_EXTS.has(ext)) { done++; continue; }
 
     const s = await statSafe(file);
-    if (!s) continue;
+    if (!s) { done++; continue; }
     const hash = fileHash(s.mtimeMs, s.size);
     const prevHash = prevHashes.get(file);
 
     if (prevGraph && prevHash === hash) {
       unchangedFiles.push(file);
+      done++;
+      if (onProgress) onProgress({ phase: 'parse', current: done, total, file });
       continue;
     }
 
     let content;
-    try { content = await readFile(file); } catch { continue; }
+    try { content = await readFile(file); } catch { done++; continue; }
     const result = await parseFile(content, file);
     result.file = file;
     result.ext = ext;
     result.hash = hash;
     result.importBindings = extractImportBindings(content, ext);
     parsed.push(result);
+    done++;
+    if (onProgress) onProgress({ phase: 'parse', current: done, total, file });
   }
 
   for (const file of unchangedFiles) {
     copyFileGraph(graph, prevGraph, file);
   }
 
-  for (const { file, symbols, references, imports, importBindings } of parsed) {
+  const parsedTotal = parsed.length;
+  for (let i = 0; i < parsedTotal; i++) {
+    const { file, symbols, references, imports, importBindings } = parsed[i];
+    if (onProgress) onProgress({ phase: 'graph', current: i + 1, total: parsedTotal, file });
     graph.addFileNode(file);
 
     for (const sym of symbols) {

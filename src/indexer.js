@@ -46,7 +46,17 @@ export async function buildIndex(dir) {
 
   // Phase 1: Build the AST graph
   const graphSpinner = ora('Building AST graph…').start();
-  const { graph } = await buildRelations(dir);
+  let graphBuilt = 0;
+  let graphTotal = 0;
+  const { graph } = await buildRelations(dir, (p) => {
+    if (p.phase === 'parse') {
+      graphTotal = p.total;
+      graphBuilt = p.current;
+      graphSpinner.text = `Parsing ${p.current}/${p.total}  (${p.file})`;
+    } else if (p.phase === 'graph') {
+      graphSpinner.text = `Building graph nodes ${p.current}/${p.total}  (${p.file})`;
+    }
+  });
   const graphMs = ((performance.now() - t0 - scanMs * 1000) / 1000).toFixed(1);
   const nodeCount = graph.nodes.size;
   const edgeCount = graph.edges.length;

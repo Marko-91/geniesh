@@ -16,11 +16,11 @@ async function getFileMeta(filePath) {
   }
 }
 
-export async function buildRelations(dir, prevGraph = null, ignorePatterns = []) {
+export async function buildRelations(dir, prevGraph = null, ignorePatterns = [], onProgress = null) {
   const files = await scanDir(dir, ignorePatterns);
   const sourceFiles = files.filter(f => SOURCE_EXTS.has(f.slice(f.lastIndexOf('.')).toLowerCase()));
 
-  const graph = await buildGraph(dir, sourceFiles, prevGraph);
+  const graph = await buildGraph(dir, sourceFiles, prevGraph, onProgress);
 
   const contentMap = new Map();
   for (const file of sourceFiles) {

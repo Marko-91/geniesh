@@ -37,11 +37,11 @@ export async function graphExists() {
   }
 }
 
-export async function buildRelations(dir) {
+export async function buildRelations(dir, onProgress = null) {
   const [prevGraph, ignorePatterns] = await Promise.all([
     tryLoadGraph(),
     loadIgnoreFile(dir),
   ]);
-  const result = await kernelBuildRelations(dir, prevGraph, ignorePatterns);
+  const result = await kernelBuildRelations(dir, prevGraph, ignorePatterns, onProgress);
   return result;
 }
