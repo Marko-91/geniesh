@@ -16,7 +16,6 @@ export class CodeGraph {
     this.adj = new Map();
     this.revAdj = new Map();
     this.fileHashes = new Map();
-    this.chunks = [];
     this.communityIds = new Map();
     this.communityCount = 0;
   }
@@ -151,7 +150,6 @@ export class CodeGraph {
       version: 3,
       nodes,
       edges: this.edges,
-      chunks: this.chunks,
       fileHashes: Object.fromEntries(this.fileHashes),
       communityCount: this.communityCount,
     };
@@ -171,7 +169,6 @@ export class CodeGraph {
       if (!graph.revAdj.has(edge.to)) graph.revAdj.set(edge.to, []);
       graph.revAdj.get(edge.to).push({ from: edge.from, relation: edge.relation, at: edge.at });
     }
-    graph.chunks = json.chunks || [];
     graph.fileHashes = new Map(Object.entries(json.fileHashes || {}));
     graph.communityCount = json.communityCount || 0;
     return graph;
