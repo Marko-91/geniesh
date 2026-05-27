@@ -144,7 +144,8 @@ export class CodeGraph {
   toJSON() {
     const nodes = {};
     for (const [id, node] of this.nodes) {
-      nodes[id] = node;
+      const { id: _, ...rest } = node;
+      nodes[id] = rest;
     }
     return {
       version: 3,

@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "commander": "^12.0.0",
-    "ora": "^9.4.0"
+    "ora": "^9.4.0",
+    "stream-json": "^3.1.0"
   },
   "scripts": {
     "build": "esbuild src/cli.js --bundle --platform=node --target=node18 --format=esm --outfile=dist/cli.js --external:ora --external:commander",
@@ -28,6 +29,9 @@
     "testEnvironment": "node",
     "transform": {
       "^.+\\.[mc]?js$": "babel-jest"
-    }
+    },
+    "transformIgnorePatterns": [
+      "/node_modules/(?!(stream-chain|stream-json)/)"
+    ]
   }
 }
