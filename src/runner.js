@@ -25,7 +25,7 @@ export async function runGenerate(prompt, model) {
     res = await fetch(`${OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: m, prompt, stream: false, think: true }),
+      body: JSON.stringify({ model: m, prompt, stream: false, think: false }),
     });
   } catch (err) {
     spinner.fail('Ollama unreachable');
@@ -55,7 +55,7 @@ export async function runQuery(prompt) {
     res = await fetch(`${OLLAMA_URL}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: _model, prompt, stream: true, think: true }),
+      body: JSON.stringify({ model: _model, prompt, stream: true, think: false }),
     });
   } catch (err) {
     spinner.fail('Ollama unreachable');
@@ -88,7 +88,7 @@ export async function runChat(messages) {
     res = await fetch(`${OLLAMA_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: _model, messages, stream: true, think: true }),
+      body: JSON.stringify({ model: _model, messages, stream: true, think: false }),
     });
   } catch (err) {
     spinner.fail('Ollama unreachable');
