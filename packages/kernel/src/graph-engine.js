@@ -323,8 +323,29 @@ function extractImportBindings(content, ext) {
   return bindings;
 }
 
+const PARSE_TIMEOUT_MS = 30_000;
+
 async function statSafe(file) {
   try { return await stat(file); } catch { return null; }
+}
+
+async function parseFileWithTimeout(content, file, done, total, onProgress) {
+  try {
+    return await Promise.race([
+      parseFile(content, file),
+      sleep(PARSE_TIMEOUT_MS).then(() => { throw new Error('timeout'); }),
+    ]);
+  } catch (err) {
+    if (err?.message === 'timeout') {
+      if (onProgress) onProgress({ phase: 'parse', current: done + 1, total, file });
+      console.warn(`[warn] parse timeout, skipping: ${file}`);
+    }
+    return null;
+  }
+}
+
+function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
 }
 
 export async function buildGraph(dir, files, prevGraph = null, onProgress = null) {
@@ -356,7 +377,8 @@ export async function buildGraph(dir, files, prevGraph = null, onProgress = null
 
     let content;
     try { content = await readFile(file); } catch { done++; continue; }
-    const result = await parseFile(content, file);
+    const result = await parseFileWithTimeout(content, file, done, total, onProgress);
+    if (!result) continue;
     result.file = file;
     result.ext = ext;
     result.hash = hash;
