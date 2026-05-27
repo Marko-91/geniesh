@@ -1,4 +1,4 @@
-import { readFile as fsReadFile } from 'fs/promises';
+import { readFile as fsReadFile, stat } from 'fs/promises';
 import { readdir } from 'fs/promises';
 import { join, extname, basename, relative, sep } from 'path';
 
@@ -154,7 +154,17 @@ export async function scanDir(dir, ignorePatterns = []) {
   return files;
 }
 
+const MAX_FILE_SIZE = 50 * 1024 * 1024;
+
 export async function readFile(filePath) {
+  try {
+    const s = await stat(filePath);
+    if (s.size > MAX_FILE_SIZE) {
+      throw new RangeError(`File too large (${(s.size / 1024 / 1024).toFixed(1)}MB > 50MB limit)`);
+    }
+  } catch (err) {
+    if (err instanceof RangeError) throw err;
+  }
   return fsReadFile(filePath, 'utf-8');
 }
 

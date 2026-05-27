@@ -82,9 +82,9 @@ export function formatMarkdown(text) {
 }
 
 // ─── StreamingMarkdownParser ──────────────────────────────────────────────────
-// Line-buffered: accumulates tokens until a newline arrives, then formats and
-// emits the complete line. Fenced code blocks are accumulated in full before
-// being formatted and emitted.
+// Writes partial lines immediately for smooth streaming. When a newline completes
+// a line, overwrites the previous partial with the fully formatted version using
+// \r (carriage return). Fenced code blocks are shown line-by-line immediately.
 
 export class StreamingMarkdownParser {
   constructor() {
@@ -95,8 +95,9 @@ export class StreamingMarkdownParser {
   }
 
   /**
-   * Feed a token from the LLM stream. Emits formatted text via write() for
-   * every complete line received.
+   * Feed a token from the LLM stream. Writes inline-formatted partial content
+   * immediately. When a newline completes a line, overwrites the partial with
+   * the fully formatted line via \r.
    * @param {string}   token
    * @param {Function} write  (formattedText: string) => void
    */
@@ -106,7 +107,11 @@ export class StreamingMarkdownParser {
     while ((idx = this._lineBuffer.indexOf("\n")) !== -1) {
       const line = this._lineBuffer.slice(0, idx);
       this._lineBuffer = this._lineBuffer.slice(idx + 1);
+      write('\r\x1b[K');
       this._processLine(line, write);
+    }
+    if (this._lineBuffer && !this._inCodeBlock) {
+      write(`\r${formatInline(this._lineBuffer)}`);
     }
   }
 
@@ -116,11 +121,11 @@ export class StreamingMarkdownParser {
    */
   flush(write) {
     if (this._inCodeBlock) {
-      // unclosed fence — emit what we accumulated
+      write('\r\x1b[K');
       this._emitCodeBlock(write, false);
     }
     if (this._lineBuffer) {
-      write(formatLine(this._lineBuffer));
+      write(`\r\x1b[K${formatLine(this._lineBuffer)}\n`);
       this._lineBuffer = "";
     }
   }
@@ -130,7 +135,7 @@ export class StreamingMarkdownParser {
       if (line.trimEnd() === "```") {
         this._emitCodeBlock(write, true);
       } else {
-        this._codeBlockLines.push(line);
+        write(`  ${line}\n`);
       }
     } else {
       const fence = line.match(/^```(\w*)$/);
@@ -138,8 +143,9 @@ export class StreamingMarkdownParser {
         this._inCodeBlock = true;
         this._codeBlockLang = fence[1] || "";
         this._codeBlockLines = [];
+        write(`\x1b[44m\x1b[37m${fence[1] ? ` ${fence[1]}` : ''}\x1b[0m\n`);
       } else {
-        write(formatLine(line) + "\n");
+        write(`${formatLine(line)}\n`);
       }
     }
   }

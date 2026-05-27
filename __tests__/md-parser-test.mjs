@@ -68,16 +68,33 @@ describe('processToken', () => {
     flush(cb);
   });
 
+  // Simulate terminal: \r overwrites from line start, \x1b[K clears to end
+  function stripControl(s) {
+    const lines = s.split('\n');
+    return lines.map(line => {
+      const segments = line.split('\r');
+      let final = '';
+      for (const seg of segments) {
+        final = seg.startsWith('\x1b[K') ? seg.slice(3) : seg;
+      }
+      return final;
+    }).join('\n');
+  }
+
+  function written() {
+    return stripControl(writeCalls.join(''));
+  }
+
   test('passes plain text straight through to callback', () => {
     processToken('hello world', cb);
     flush(cb);
-    expect(writeCalls.join('')).toBe('hello world');
+    expect(written()).toBe('hello world\n');
   });
 
   test('applies bold formatting when ** delimiters are complete', () => {
     processToken('Say **bold** now', cb);
     flush(cb);
-    const output = writeCalls.join('');
+    const output = written();
     expect(output).toContain('\x1b[1m');
     expect(output).toContain('bold');
     expect(output).toContain('\x1b[0m');
@@ -85,15 +102,14 @@ describe('processToken', () => {
 
   test('buffers text while bold tag is still open — no ANSI emitted yet', () => {
     processToken('Start **incomplete', cb);
-    // closing ** not seen yet — bold ANSI must not have been emitted
-    const before = writeCalls.join('');
+    const before = written();
     expect(before).not.toContain('\x1b[1m');
   });
 
   test('flush outputs whatever remains in the buffer', () => {
     processToken('leftover text', cb);
     flush(cb);
-    expect(writeCalls.join('')).toContain('leftover text');
+    expect(written()).toContain('leftover text');
   });
 
   test('flush on empty buffer does not crash', () => {
