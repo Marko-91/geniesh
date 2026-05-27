@@ -182,12 +182,10 @@ program
       }).start();
 
       let contextText = '';
-      let traceFormatted = '';
       try {
         if (opts.budget && graph) graph._budget = opts.budget;
-        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles, graph, fileRefs, search);
+        const { contextString } = await buildChatContext(trimmed, index, allFiles, graph, fileRefs, search);
         contextText = contextString;
-        traceFormatted = trace;
         ctxSpinner.succeed(
           symbols.length
             ? `Context ready — BFS traversal for: ${symbols.join(', ')}`
@@ -195,9 +193,7 @@ program
               ? `Context ready — file-ref: ${fileRefs.map(f => basename(f)).join(', ')}`
               : 'Context ready — RAG',
         );
-        if (traceFormatted) {
-          console.log(traceFormatted);
-        }
+
       } catch (err) {
         ctxSpinner.warn(`Context build failed (${err.message}), falling back to plain message`);
       }
