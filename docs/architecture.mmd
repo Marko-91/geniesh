@@ -1,0 +1,88 @@
+---
+title: Geniesh Architecture
+---
+flowchart TB
+  subgraph CLI[CLI Layer - src/]
+    CLI_ENTRY[cli.js - commander] --> CMD_INDEX[buildIndex]
+    CLI_ENTRY --> CMD_CHAT[runChat]
+    CLI_ENTRY --> CMD_QUERY[query - dir or file]
+    CLI_ENTRY --> CMD_REFS[refs - grep]
+    CLI_ENTRY --> CMD_EVAL[eval]
+    CLI_ENTRY --> CMD_BENCH[benchmark generate]
+  end
+
+  subgraph INDEX[Indexing Pipeline]
+    SCAN[scanDir - source files] --> FILTER[fs-utils.js - genieshignore]
+    FILTER --> STAT[stat each file - compare mtime+size hash]
+    STAT -->|unchanged| SKIP[copy from prev graph]
+    STAT -->|changed or new| PARSE[parsers - parseFile by extension]
+
+    PARSE --> JS_TS["js-ts.js - ast-grep napi - JS,TS,JSX,TSX"]
+    PARSE --> TS_BASED["ts-based.js - tree-sitter WASM - Python,Go,Rust,Java,C,C++,PHP"]
+    PARSE --> PHP[php.js - tree-sitter PHP native]
+    PARSE --> GENERIC["generic.js - regex fallback - Ruby,Swift,Kotlin,..."]
+
+    JS_TS & TS_BASED & PHP & GENERIC --> SYMBOLS(symbols, refs, imports)
+    SYMBOLS --> GRAPH_BUILD[graph-engine.js - buildGraph]
+
+    GRAPH_BUILD --> ADDNODE[addFileNode - addSymbolNode]
+    ADDNODE --> ADDEDGE[addEdge - contains,calls,imports]
+    ADDEDGE --> DETECT[community.js - detectCommunities BFS]
+    DETECT --> CHUNK[chunker.js - 100 lines, 50 overlap]
+
+    CHUNK --> EMBED[embedder.js - Ollama nomic-embed-text]
+    EMBED --> SAVE_INDEX[saveIndex - geniesh-index.json]
+
+    GRAPH_BUILD --> SKIP_NODES[merge prev nodes by file hash]
+    SKIP_NODES --> SAVE_GRAPH[relations.js - saveGraph via stream-json]
+  end
+
+  subgraph QUERY[Query / Chat Pipeline]
+    Q_USER[user question] --> Q_SYMBOLS[extractSymbols - extractFileRefs]
+    Q_SYMBOLS --> Q_SEARCH[search.js - cosine-similarity top-K]
+
+    Q_SYMBOLS --> Q_GRAPH[graph-query.js - callers,callees,community]
+    Q_SEARCH --> Q_CONTEXT[context-builder.js - buildChatContext]
+    Q_GRAPH --> Q_CONTEXT
+
+    Q_CONTEXT --> Q_BFS[Budgeted BFS - seed - frontier - rank - repeat]
+    Q_BFS --> Q_RANK[rankSymbols - query-match priority]
+    Q_BFS --> Q_WINDOW[applySlideWindow - 30 percent per-file cap]
+    Q_WINDOW --> Q_LLM[runner.js - Ollama generate or chat]
+  end
+
+  subgraph STORE[Stored Artifacts - gitignored]
+    GRAPH_FILE[geniesh-graph.json - v3 schema]
+    INDEX_FILE[geniesh-index.json - chunks plus embeddings]
+  end
+
+  subgraph KERNEL[Kernel Layer - packages/kernel/src/]
+    KG[graph-engine.js - CodeGraph class]
+    KR[relations.js - buildRelations]
+    KC[context-builder.js - BFS budget RAG]
+    KS[symbol-utils.js - regex ast-grep extraction]
+    KF[fs-utils.js - scanDir readFile]
+    KGREP[grep.js - word-boundary grep]
+    KCHUNK[chunker.js - code chunking]
+  end
+
+  subgraph EXTERNAL[External Dependencies]
+    OLLAMA[Ollama - LLM plus embeddings]
+    TREESITTER[tree-sitter WASM plus native addons]
+    ASTGREP[ast-grep napi - JS/TS parser]
+  end
+
+  SAVE_GRAPH --> GRAPH_FILE
+  SAVE_INDEX --> INDEX_FILE
+  GRAPH_FILE --> Q_GRAPH
+  INDEX_FILE --> Q_SEARCH
+
+  CLI_ENTRY --> OLLAMA
+  EMBED --> OLLAMA
+  Q_LLM --> OLLAMA
+  PARSE --> TREESITTER
+  JS_TS --> ASTGREP
+
+  CLI -.->|delegates to| KERNEL
+  INDEX -.->|delegates to| KERNEL
+  QUERY -.->|delegates to| KERNEL

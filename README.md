@@ -277,6 +277,8 @@ Each benchmark suite has 12–15 questions with expected file/symbol answers. Ru
 geniesh separates **LLM-provider-specific code** from **pure code-navigation logic**.
 Swap Ollama for OpenAI — swap only the adapter; the kernel never changes.
 
+<img alt="Geniesh Architecture Diagram" src="docs/architecture.svg" width="100%">
+
 ### One flow, two responsibilities
 
 ```
