@@ -23,7 +23,7 @@ import { webSearch, formatSearchResults } from './web-search.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
 import { extractSymbols } from './symbol-utils.js';
 import { scanDir, extractFileRefs } from './fs-utils.js';
-import { parseFileEdits, formatDiff, applyEdit } from './diff-apply.js';
+import { parseFileEdits, formatDiff, formatSearchReplaceDiff, applySearchReplace, applyFullFileEdit } from './diff-apply.js';
 import { parseShellCommands, runShellCommand, formatCommandResult } from './terminal-agent.js';
 import { execSync } from 'child_process';
 import ora from 'ora';
@@ -129,12 +129,22 @@ program
           '- If the user message contains a [Web page content] section,\n' +
           '  the content was fetched from a URL they asked about. Use it to answer\n' +
           '  their question — it is as authoritative as the codebase context.\n' +
-          '- You can propose file edits by outputting a fenced code block with\n' +
-          '  the language tag followed by a colon and the file path, then the\n' +
-          '  COMPLETE new file content. Example:\n' +
-          '    ```js:src/app.js\n' +
-          '    const express = require("express");\n' +
-          '    ```\n' +
+          '- You can propose file edits in two ways:\n' +
+          '  1) Full-file: a fenced code block with language tag, colon, and path.\n' +
+          '     Example:\n' +
+          '       ```js:src/app.js\n' +
+          '       const express = require("express");\n' +
+          '       const app = express();\n' +
+          '       ```\n' +
+          '  2) Search/replace (preferred for targeted changes):\n' +
+          '     File path on its own line, then SEARCH, then the exact text to\n' +
+          '     find, then REPLACE, then the replacement. Example:\n' +
+          '       src/app.js\n' +
+          '       SEARCH\n' +
+          '       const port = 3000;\n' +
+          '       REPLACE\n' +
+          '       const port = process.env.PORT || 3000;\n' +
+          '     The SEARCH text MUST match the file exactly, character for character.\n' +
           '- You can execute shell commands by outputting a fenced code block\n' +
           '  with the bash language tag. Example:\n' +
           '    ```bash\n' +
@@ -340,14 +350,26 @@ program
           // Check for file edits
           const edits = parseFileEdits(currentReply, allFiles);
           for (const edit of edits) {
-            const oldContent = await readFile(edit.file).catch(() => '');
-            const diff = formatDiff(oldContent, edit.content, edit.file);
+            let diff;
+            let apply;
+            if (edit.type === 'sr') {
+              diff = formatSearchReplaceDiff(edit.file, edit.search, edit.replace);
+              apply = () => applySearchReplace(edit.file, edit.search, edit.replace);
+            } else {
+              const oldContent = await readFile(edit.file).catch(() => '');
+              diff = formatDiff(oldContent, edit.content, edit.file);
+              apply = () => applyFullFileEdit(edit.file, edit.content);
+            }
             if (!diff) continue;
             process.stdout.write(`\n${diff}\n`);
             const answer = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
             if (!answer || answer.toLowerCase() === 'y' || answer === '') {
-              await applyEdit(edit.file, edit.content);
-              process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
+              try {
+                await apply();
+                process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
+              } catch (err) {
+                process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
+              }
             } else {
               process.stdout.write(`\x1b[33mSkipped ${edit.file}\x1b[0m\n`);
             }
