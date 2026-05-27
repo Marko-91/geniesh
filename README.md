@@ -79,7 +79,7 @@ git push origin main --tags
 
 ### `geniesh index --dir <path>`
 
-Scans a directory, chunks all source files, generates embeddings, builds a **symbol relation graph**, and saves both `geniesh-index.json` and `geniesh-relations.json`. Run this once before using `geniesh chat`.
+Scans a directory, chunks all source files, generates embeddings, builds a **symbol relation graph** with cross-file import/alias resolution, and saves both `geniesh-index.json` and `geniesh-relations.json`. Run this once before using `geniesh chat`.
 
 ```bash
 geniesh index --dir src/
@@ -89,7 +89,9 @@ geniesh index --dir .
 geniesh --embedder mxbai-embed-large index --dir .
 ```
 
-Files in `node_modules`, `dist`, `.git`, `build`, `coverage`, and hidden directories are automatically ignored.
+The following are automatically ignored: `node_modules`, `dist`, `.git`, `build`, `coverage`, `target`, `.gradle`, `Pods`, `.build`, `deps`, `_build`, `tmp`, `temp`, `.idea`, `.vscode`, `bazel-*`, hidden directories, minified files, and `pnpm-lock.yaml`.
+
+**`.genieshignore`** — place a `.genieshignore` file (`.gitignore` syntax) in the project root to exclude additional files or directories from indexing.
 
 ---
 
@@ -248,6 +250,21 @@ Output is printed in two stages with clear headers. The reviewer checks for accu
 
 *`geniesh refs application.handle --explain` — 12 occurrences across 3 files with a concise summary.*
 
+### Benchmark repos
+
+geniesh is numerically evaluated against these open-source projects:
+
+| Repo | Language | Files | Nodes | Edges |
+|------|----------|-------|-------|-------|
+| [Express](https://github.com/expressjs/express) | JavaScript | 152 | 502 | ~5k |
+| [Flask](https://github.com/pallets/flask) | Python | ~200 | ~2k | ~20k |
+| [Gin](https://github.com/gin-gonic/gin) | Go | ~100 | ~1k | ~10k |
+| [Ripgrep](https://github.com/BurntSushi/ripgrep) | Rust | ~300 | ~5k | ~40k |
+| [Zod](https://github.com/colinhacks/zod) | TypeScript | 117 | ~3k | ~25k |
+| [Monolog](https://github.com/Seldaek/monolog) | PHP | 217 | 9,166 | 64,367 |
+
+Each benchmark suite has 12–15 questions with expected file/symbol answers. Run `geniesh eval --benchmark <file>` to measure file recall, symbol recall, and context efficiency.
+
 ### Video walkthrough
 
 <!-- TODO: Replace with a real screen recording link -->
@@ -358,11 +375,15 @@ workers) without Ollama or a CLI.
 
 ```
 Indexing pipeline:
-  scan dir → skip .min.js/.min.css → chunk (100 lines, 50-line overlap)
+  scan dir (respects .genieshignore) → skip .min.js/.min.css
+            → chunk (100 lines, 50-line overlap)
             → embed each chunk (nomic-embed-text, truncated to 6000 chars)
             → save to geniesh-index.json
             → build relation graph with symbol metadata (kind, exported, lineRange)
               + import edges (byImports / byImporters)
+              + cross-file alias resolution (JS/TS `import { x as y }`, Python `from x import y as z`)
+              + multi-language support: JS, TS, Python, Go, PHP, Rust, Ruby, Swift, Java, Kotlin,
+                C, C++, Zig — via tree-sitter WASM parsers with native addon fallback
             → incremental merge: only re-scan files whose hash (mtime+size) changed
             → prune stale symbols and files → save to geniesh-relations.json
 
@@ -394,11 +415,16 @@ OpenAI, sentence-transformers, or a null fallback (grep-only BFS).
 @geniesh/kernel (packages/kernel/)     ← no LLM deps, pure Node
 ├── src/
 │   ├── index.js              Barrel exports
-│   ├── fs-utils.js           Directory scanning, file reading
+│   ├── fs-utils.js           Directory scanning, file reading, .genieshignore
 │   ├── symbol-utils.js       Symbol extraction (camelCase, PascalCase, etc.)
 │   ├── grep.js               Word-boundary grep with scope windows
-│   ├── relations.js          Relation graph builder + import-edge extraction
+│   ├── graph-engine.js       AST graph builder, import resolution, alias-aware cross-file matching
+│   ├── relations.js          Relation graph builder + import-edge extraction + incremental re-index
 │   ├── chunker.js            Line-based code chunking
+│   ├── parsers/
+│   │   ├── index.js          Parser dispatch (tree-sitter WASM → native → generic)
+│   │   └── ts-based.js       Tree-sitter extractors: JS, TS, TSX, Python, Go, Rust,
+│   │                          Ruby, Swift, Java, Kotlin, C, C++, Zig, PHP
 │   └── context-builder.js    BFS traversal + budgeted retrieval + RAG merge
 │                              (accepts search() as dependency injection)
 └── package.json
@@ -443,7 +469,8 @@ If you want to contribute, don't write code. Write tests. Then make them pass.
 
 ## Notes
 
-- `geniesh-index.json` and `geniesh-relations.json` are excluded from git by default.
+- `geniesh-index.json`, `geniesh-relations.json`, and `monolog/` are excluded from git by default.
+- `.genieshignore` — create this file in the project root with `.gitignore`-style patterns to exclude files/directories from indexing (comments with `#`, negation with `!`, anchored with `/`, dir-only with trailing `/`).
 - The `geniesh-relations.json` graph persists across sessions. Re-running `geniesh index` performs an **incremental merge** — only files whose content changed (detected by mtime+size hash) are re-scanned, and stale symbols are pruned. A fresh build happens when no previous graph exists.
 - Ollama must be running (`ollama serve`) before using any command.
 - Context budget is capped at 10,000 characters per turn.

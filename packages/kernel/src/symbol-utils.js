@@ -1,3 +1,140 @@
+// Tree-sitter based extraction for JS/TS/JSX/TSX
+import { createRequire } from 'module';
+
+function getRequire() {
+  try {
+    return createRequire(import.meta.url);
+  } catch {
+    return (name) => { throw new Error(`Cannot require ${name} in this environment`); };
+  }
+}
+
+let tsExtractors = null;
+function getTSExtractors() {
+  if (tsExtractors) return tsExtractors;
+  try {
+    const napi = getRequire()('@ast-grep/napi');
+    const LANG_MAP = {
+      '.js': napi.js, '.mjs': napi.js, '.cjs': napi.js,
+      '.jsx': napi.jsx, '.ts': napi.ts, '.tsx': napi.tsx,
+    };
+    const DECL_KINDS = new Set([
+      'function_declaration', 'class_declaration', 'lexical_declaration',
+      'variable_declaration', 'method_definition', 'arrow_function',
+      'generator_function', 'interface_declaration', 'type_alias_declaration',
+      'enum_declaration',
+    ]);
+    tsExtractors = { napi, LANG_MAP, DECL_KINDS };
+  } catch {
+    tsExtractors = false;
+  }
+  return tsExtractors;
+}
+
+function getLangFromExt(ext) {
+  const ts = getTSExtractors();
+  if (!ts) return null;
+  return ts.LANG_MAP[ext] || null;
+}
+
+function getDeclName(node) {
+  const kind = node.kind();
+  if (['function_declaration', 'class_declaration', 'generator_function',
+       'interface_declaration', 'type_alias_declaration', 'enum_declaration'].includes(kind)) {
+    const names = node.children().filter(c => c.kind() === 'identifier' || c.kind() === 'type_identifier');
+    return names.length > 0 ? names[0].text() : null;
+  }
+  if (kind === 'lexical_declaration' || kind === 'variable_declaration') {
+    for (const c of node.children()) {
+      if (c.kind() === 'variable_declarator') {
+        const ids = c.children().filter(x => x.kind() === 'identifier');
+        if (ids.length > 0) return ids[0].text();
+      }
+    }
+    return null;
+  }
+  if (kind === 'method_definition') {
+    const names = node.children().filter(c => c.kind() === 'property_identifier');
+    return names.length > 0 ? names[0].text() : null;
+  }
+  return null;
+}
+
+function toSymbolKind(nodeKind) {
+  switch (nodeKind) {
+    case 'function_declaration': case 'generator_function':
+    case 'method_definition': case 'arrow_function':
+      return 'function';
+    case 'class_declaration': return 'class';
+    case 'lexical_declaration': case 'variable_declaration': return 'variable';
+    case 'interface_declaration': case 'type_alias_declaration': return 'type';
+    case 'enum_declaration': return 'enum';
+    default: return 'reference';
+  }
+}
+
+export function tsExtractAllSymbolsWithMetadata(content) {
+  const ts = getTSExtractors();
+  if (!ts) return null;
+  try {
+    const ast = ts.napi.ts.parse(content);
+    const root = ast.root();
+    const symbols = [];
+    const exportNames = new Set();
+
+    function findExportClauses(node) {
+      if (node.kind() === 'export_clause') {
+        for (const c of node.children()) {
+          if (c.kind() === 'export_specifier') {
+            const ids = c.children().filter(x => x.kind() === 'identifier');
+            if (ids.length > 0) exportNames.add(ids[0].text());
+          }
+        }
+      }
+      if (node.kind() === 'export_statement') {
+        const text = node.text();
+        const m = text.match(/export\s+default\s+(\w+)/);
+        if (m) exportNames.add(m[1]);
+      }
+      for (const child of node.children()) findExportClauses(child);
+    }
+    findExportClauses(root);
+
+    function walkDecls(node) {
+      for (const child of node.children()) {
+        const kind = child.kind();
+        if (kind === 'export_statement') { walkDecls(child); continue; }
+        if (ts.DECL_KINDS.has(kind)) {
+          const name = getDeclName(child);
+          if (name) {
+            const range = child.range();
+            let exported = false;
+            const parent = child.parent();
+            if (parent && parent.kind() === 'export_statement') exported = true;
+            if (exportNames.has(name)) exported = true;
+            if (!exported && /module\.exports\s*=|exports\.\w+\s*=/.test(content)) {
+              if (new RegExp(`module\\.exports\\.${name}\\b|exports\\.${name}\\b`).test(content)) exported = true;
+            }
+            symbols.push({
+              name, kind: toSymbolKind(kind), exported,
+              lineRange: [range.start.line + 1, range.end.line + 1],
+            });
+          }
+        }
+        if (kind === 'class_declaration') {
+          for (const inner of child.children()) {
+            if (inner.kind() === 'class_body') walkDecls(inner);
+          }
+        }
+      }
+    }
+    walkDecls(root);
+    return symbols;
+  } catch {
+    return null;
+  }
+}
+
 const SYMBOL_RE = new RegExp(
   '\\b(' +
   '[a-z][a-z0-9]*[A-Z][a-zA-Z0-9]*' +
@@ -143,7 +280,72 @@ function bestKindFromSet(kinds) {
   return 'reference';
 }
 
-export function extractAllSymbolsWithMetadata(content) {
+export function extractAllSymbolsWithMetadata(content, filePath) {
+  // Use tree-sitter for JS/TS/JSX/TSX if available
+  if (filePath) {
+    const ext = filePath.slice(filePath.lastIndexOf('.')).toLowerCase();
+    const lang = getLangFromExt(ext);
+    if (lang) {
+      try {
+        const ast = lang.parse(content);
+        const root = ast.root();
+        const symbols = [];
+        const exportNames = new Set();
+        const ts = getTSExtractors();
+
+        function findExportClauses(node) {
+          if (node.kind() === 'export_clause') {
+            for (const c of node.children()) {
+              if (c.kind() === 'export_specifier') {
+                const ids = c.children().filter(x => x.kind() === 'identifier');
+                if (ids.length > 0) exportNames.add(ids[0].text());
+              }
+            }
+          }
+          if (node.kind() === 'export_statement') {
+            const text = node.text();
+            const m = text.match(/export\s+default\s+(\w+)/);
+            if (m) exportNames.add(m[1]);
+          }
+          for (const child of node.children()) findExportClauses(child);
+        }
+        findExportClauses(root);
+
+        function walkDecls(node) {
+          for (const child of node.children()) {
+            const kind = child.kind();
+            if (kind === 'export_statement') { walkDecls(child); continue; }
+            if (ts.DECL_KINDS.has(kind)) {
+              const name = getDeclName(child);
+              if (name) {
+                const range = child.range();
+                let exported = false;
+                const parent = child.parent();
+                if (parent && parent.kind() === 'export_statement') exported = true;
+                if (exportNames.has(name)) exported = true;
+                if (!exported && /module\.exports\s*=|exports\.\w+\s*=/.test(content)) {
+                  if (new RegExp(`module\\.exports\\.${name}\\b|exports\\.${name}\\b`).test(content)) exported = true;
+                }
+                symbols.push({
+                  name, kind: toSymbolKind(kind), exported,
+                  lineRange: [range.start.line + 1, range.end.line + 1],
+                });
+              }
+            }
+            if (kind === 'class_declaration') {
+              for (const inner of child.children()) {
+                if (inner.kind() === 'class_body') walkDecls(inner);
+              }
+            }
+          }
+        }
+        walkDecls(root);
+        return symbols;
+      } catch {}
+    }
+  }
+
+  // Fall back to regex for unsupported languages
   const lines = content.split('\n');
   const allSyms = new Map();
 

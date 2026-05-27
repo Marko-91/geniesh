@@ -1,5 +1,5 @@
 import { jest } from '@jest/globals';
-import { scanDir, readFile } from '../src/fs-utils.js';
+import { scanDir, readFile, parseIgnoreFile, loadIgnoreFile } from '../src/fs-utils.js';
 import { readdir, readFile as fsReadFile } from 'fs/promises';
 import { join } from 'path';
 
@@ -74,6 +74,86 @@ describe('fs-utils', () => {
     it('should throw if file read fails', async () => {
       fsReadFile.mockRejectedValue(new Error('File not found'));
       await expect(readFile('/test/file.js')).rejects.toThrow('File not found');
+    });
+  });
+
+  describe('parseIgnoreFile', () => {
+    it('should parse simple patterns', () => {
+      const patterns = parseIgnoreFile('dist\n.env\ntmp/');
+      expect(patterns.length).toBe(3);
+      expect(patterns[0].pattern).toBe('dist');
+      expect(patterns[0].negate).toBe(false);
+      expect(patterns[1].pattern).toBe('.env');
+      expect(patterns[2].pattern).toBe('tmp');
+      expect(patterns[2].dirOnly).toBe(true);
+    });
+
+    it('should handle negated patterns', () => {
+      const patterns = parseIgnoreFile('*\n!keep.js');
+      expect(patterns.length).toBe(2);
+      expect(patterns[0].negate).toBe(false);
+      expect(patterns[1].negate).toBe(true);
+      expect(patterns[1].pattern).toBe('keep.js');
+    });
+
+    it('should skip comments and empty lines', () => {
+      const patterns = parseIgnoreFile('# comment\n\nbuild\n');
+      expect(patterns.length).toBe(1);
+      expect(patterns[0].pattern).toBe('build');
+    });
+
+    it('should handle anchored patterns', () => {
+      const patterns = parseIgnoreFile('/only-root');
+      expect(patterns.length).toBe(1);
+      expect(patterns[0].anchored).toBe(true);
+      expect(patterns[0].pattern).toBe('only-root');
+    });
+  });
+
+  describe('scanDir with ignorePatterns', () => {
+    it('should skip files matching ignore patterns', async () => {
+      readdir.mockImplementation((path) => {
+        if (path === '/test') return Promise.resolve([
+          { name: 'app.js', isDirectory: () => false, isFile: () => true },
+          { name: 'test.js', isDirectory: () => false, isFile: () => true },
+        ]);
+        return Promise.resolve([]);
+      });
+
+      const patterns = parseIgnoreFile('test.js');
+      const result = await scanDir('/test', patterns);
+      expect(result).toEqual(['\\test\\app.js']);
+    });
+
+    it('should skip dirs matching ignore patterns', async () => {
+      readdir.mockImplementation((path) => {
+        if (path === '/test') return Promise.resolve([
+          { name: 'build', isDirectory: () => true, isFile: () => false },
+          { name: 'app.js', isDirectory: () => false, isFile: () => true },
+        ]);
+        if (path === join('/test', 'build')) return Promise.resolve([
+          { name: 'artifacts.js', isDirectory: () => false, isFile: () => true },
+        ]);
+        return Promise.resolve([]);
+      });
+
+      const patterns = parseIgnoreFile('build/');
+      const result = await scanDir('/test', patterns);
+      expect(result).toEqual(['\\test\\app.js']);
+    });
+  });
+
+  describe('loadIgnoreFile', () => {
+    it('should return empty array when file not found', async () => {
+      fsReadFile.mockRejectedValue(new Error('ENOENT'));
+      const result = await loadIgnoreFile('/test');
+      expect(result).toEqual([]);
+    });
+
+    it('should return empty array when content is empty', async () => {
+      fsReadFile.mockResolvedValue('');
+      const result = await loadIgnoreFile('/test');
+      expect(result).toEqual([]);
     });
   });
 });

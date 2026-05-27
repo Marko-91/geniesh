@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 import { extractFunction } from './extractor.js';
 import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './indexer.js';
-import { loadRelations, relationsExist } from './relations.js';
+import { tryLoadGraph, graphExists, loadGraph } from './relations.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt } from './prompt.js';
 import { runQuery, runChat, runGenerate, setModel } from './runner.js';
@@ -69,44 +69,40 @@ program
 
 program
   .command('chat')
-  .description('Start an intelligent chat session with auto-indexing and priority RAG')
+  .description('Start an intelligent chat session with auto-indexing and AST graph traversal')
   .option('--dir <path>', 'Directory to use for indexing/search (default: cwd)')
   .option('--files <paths...>', 'Explicit files to use as context (skips auto-index)')
   .option('--dirs <paths...>', 'Explicit directories to scan as context (skips auto-index)')
+  .option('--budget <chars>', 'Context budget in characters (default: 128000)', parseInt)
   .action(async (opts) => {
     const dir = opts.dir || process.cwd();
 
-    // ─ 1. Build or load index ─────────────────────────────────────────────────
     let index;
+    let graph;
     let allFiles;
     const hasExplicit = (opts.files && opts.files.length > 0) || (opts.dirs && opts.dirs.length > 0);
 
     if (hasExplicit) {
-      // Explicit mode: build an in-memory index from the given files/dirs only
       let explicitFiles = [...(opts.files || [])];
       for (const d of (opts.dirs || [])) {
         const scanned = await scanDir(d);
         explicitFiles = explicitFiles.concat(scanned);
       }
-      // deduplicate
       explicitFiles = [...new Set(explicitFiles)];
       console.log(`\n📎  Explicit context: ${explicitFiles.length} file(s)\n`);
       index = await buildIndexFromFileList(explicitFiles);
       allFiles = explicitFiles;
-    } else if (await indexExists()) {
-      const loadSpinner = ora('Loading index…').start();
+    } else if (await indexExists() && await graphExists()) {
+      const loadSpinner = ora('Loading index + graph…').start();
       index = await loadIndex();
-      loadSpinner.succeed(`Index loaded — ${index.length} chunks from ${new Set(index.map(e => e.file)).size} files`);
+      graph = await loadGraph();
+      loadSpinner.succeed(`Index: ${index.length} chunks · Graph: ${graph.nodes.size} nodes, ${graph.edges.length} edges`);
       allFiles = await scanDir(dir);
     } else {
-      console.log(`\n⚠️  No index found. Building index for ${dir}…\n`);
+      console.log(`\n⚠️  No index found. Building index + graph for ${dir}…\n`);
       index = await buildIndex(dir);
+      graph = await loadGraph();
       allFiles = await scanDir(dir);
-    }
-
-    let relations = null;
-    if (!hasExplicit && await relationsExist()) {
-      try { relations = await loadRelations(); } catch {}
     }
 
     // ─ 3. System prompt ───────────────────────────────────────────────────────
@@ -142,12 +138,14 @@ program
     console.log(`🧩  Model     : ${program.opts().model || 'qwen3-coder'}`);
     console.log(`🔤  Embedder  : ${program.opts().embedder || 'nomic-embed-text'}`);
     console.log(`📚  Index     : ${index.length} chunks`);
+    if (graph) console.log(`🔗  Graph     : ${graph.nodes.size} nodes · ${graph.edges.length} edges · ${graph.communityCount} communities`);
     console.log('────────────────────────────────────────────────────────────\n');
 
     console.log('\x1b[90m💡 Tips\x1b[0m');
     console.log('\x1b[90m   • Mention a file path to load it as full context:  "look at lib/application.js"\x1b[0m');
     console.log('\x1b[90m   • Ask about specific symbols:                      "how does Router.handle work?"\x1b[0m');
-    console.log('\x1b[90m   • Use concrete function/method names for best BFS\x1b[0m');
+    console.log('\x1b[90m   • Use concrete function/method names for AST graph\x1b[0m');
+    if (graph) console.log('\x1b[90m   • Budget is 128k chars default (--budget N to override)\x1b[0m');
     console.log('\x1b[90m   • Type \x1b[33mexit\x1b[90m or Ctrl+C to quit\x1b[0m\n');
 
     process.on('SIGINT', () => {
@@ -186,7 +184,8 @@ program
       let contextText = '';
       let traceFormatted = '';
       try {
-        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles, relations, fileRefs, search);
+        if (opts.budget && graph) graph._budget = opts.budget;
+        const { contextString, log, traceFormatted: trace } = await buildChatContext(trimmed, index, allFiles, graph, fileRefs, search);
         contextText = contextString;
         traceFormatted = trace;
         ctxSpinner.succeed(

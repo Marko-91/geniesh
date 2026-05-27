@@ -1,37 +1,47 @@
-import { readFile as fsReadFile, writeFile, stat } from 'fs/promises';
-import { scanDir } from './fs-utils.js';
+import { readFile as fsReadFile, writeFile, access } from 'fs/promises';
+import { buildRelations as kernelBuildRelations } from '../packages/kernel/src/relations.js';
+import { CodeGraph } from '../packages/kernel/src/graph-engine.js';
+import { loadIgnoreFile } from '../packages/kernel/src/fs-utils.js';
 
 export {
-  buildRelations,
   fileRelationsToNames,
   symbolRelationsToFiles,
 } from '../packages/kernel/src/relations.js';
 
-const RELATIONS_FILE = 'geniesh-relations.json';
+const GRAPH_FILE = 'geniesh-graph.json';
 
-export async function tryLoadRelations() {
+export async function tryLoadGraph() {
   try {
-    const raw = await fsReadFile(RELATIONS_FILE, 'utf-8');
-    return JSON.parse(raw);
+    const raw = await fsReadFile(GRAPH_FILE, 'utf-8');
+    return CodeGraph.fromJSON(JSON.parse(raw));
   } catch {
     return null;
   }
 }
 
-export function saveRelations(relations) {
-  return writeFile(RELATIONS_FILE, JSON.stringify(relations), 'utf-8');
+export function saveGraph(graph) {
+  return writeFile(GRAPH_FILE, JSON.stringify(graph.toJSON()), 'utf-8');
 }
 
-export async function loadRelations() {
-  const raw = await fsReadFile(RELATIONS_FILE, 'utf-8');
-  return JSON.parse(raw);
+export async function loadGraph() {
+  const raw = await fsReadFile(GRAPH_FILE, 'utf-8');
+  return CodeGraph.fromJSON(JSON.parse(raw));
 }
 
-export async function relationsExist() {
+export async function graphExists() {
   try {
-    await fsReadFile(RELATIONS_FILE, 'utf-8');
+    await access(GRAPH_FILE);
     return true;
   } catch {
     return false;
   }
+}
+
+export async function buildRelations(dir) {
+  const [prevGraph, ignorePatterns] = await Promise.all([
+    tryLoadGraph(),
+    loadIgnoreFile(dir),
+  ]);
+  const result = await kernelBuildRelations(dir, prevGraph, ignorePatterns);
+  return result;
 }

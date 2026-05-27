@@ -2,15 +2,22 @@ import { jest } from '@jest/globals';
 import { buildChatContext, applySlideWindow } from '../src/context-builder.js';
 import { search } from '../src/search.js';
 
-// Mock dependencies (kernel paths — context-builder lives in packages/kernel)
 jest.mock('../src/search.js', () => ({
   search: jest.fn(),
 }));
-jest.mock('../packages/kernel/src/grep.js', () => ({
-  grepFiles: jest.fn(),
+jest.mock('../packages/kernel/src/symbol-utils.js', () => ({
+  extractSymbols: jest.fn(() => []),
 }));
-
-import { grepFiles } from '../packages/kernel/src/grep.js';
+jest.mock('../packages/kernel/src/graph-query.js', () => ({
+  queryCallers: jest.fn(() => []),
+  queryCallees: jest.fn(() => []),
+  queryFileNeighbors: jest.fn(() => ({ imports: [], importers: [], symbols: [] })),
+  rankSymbols: jest.fn(() => []),
+  scoreSymbol: jest.fn(() => 0),
+}));
+jest.mock('../packages/kernel/src/fs-utils.js', () => ({
+  readFile: jest.fn(async () => ''),
+}));
 
 describe('context-builder', () => {
   beforeEach(() => {
@@ -22,7 +29,6 @@ describe('context-builder', () => {
       search.mockResolvedValue([
         { file: 'a.js', score: 0.9, startLine: 1, endLine: 10, chunk: 'code' },
       ]);
-      grepFiles.mockResolvedValue([]);
 
       const result = await buildChatContext('query', [{ file: 'a.js', embedding: [1] }], ['a.js'], null, [], search);
       expect(result.contextString).toContain('code');
@@ -53,7 +59,7 @@ describe('context-builder', () => {
         { role: 'assistant', content: 'a9' },
       ];
       applySlideWindow(messages);
-      expect(messages.length).toBe(17); // system + 8 pairs
+      expect(messages.length).toBe(17);
     });
   });
 });

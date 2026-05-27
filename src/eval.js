@@ -1,5 +1,5 @@
 import { loadIndex, indexExists } from './indexer.js';
-import { loadRelations, relationsExist } from './relations.js';
+import { loadGraph, graphExists } from './relations.js';
 import { search } from './search.js';
 import { buildChatContext } from './context-builder.js';
 import { scanDir } from './fs-utils.js';
@@ -64,8 +64,8 @@ export async function runEval(benchmarkFile, dir, verbose) {
 
   const index = await loadIndex();
   const allFiles = await scanDir(dir);
-  const hasRelations = await relationsExist();
-  const relations = hasRelations ? await loadRelations() : null;
+  const hasGraph = await graphExists();
+  const graph = hasGraph ? await loadGraph() : null;
 
   const results = [];
 
@@ -76,7 +76,7 @@ export async function runEval(benchmarkFile, dir, verbose) {
       bm.question,
       index,
       allFiles,
-      relations,
+      graph,
       bm.file_refs || [],
       search,
     );

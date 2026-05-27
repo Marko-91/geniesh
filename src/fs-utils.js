@@ -1,6 +1,6 @@
 import { extname, basename } from 'path';
 
-export { scanDir, readFile } from '../packages/kernel/src/fs-utils.js';
+export { scanDir, readFile, parseIgnoreFile, loadIgnoreFile } from '../packages/kernel/src/fs-utils.js';
 
 const FILE_REF_EXTS = new Set([
   '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',

@@ -1,5 +1,6 @@
 # Node.js dependencies
 /node_modules/
+packages/kernel/node_modules/
 
 # Compiled files
 /dist/
@@ -9,9 +10,13 @@
 # IDE metadata
 /.idea/
 
-# Geniesh index and relations
+# Geniesh index, graph, relations
 /geniesh-index.json
 /geniesh-relations.json
+/geniesh-graph.json
+
+# Graphify analysis output
+/graphify-out/
 
 # Legacy index names (migration)
 /.ai-index.json
@@ -48,4 +53,5 @@ credentials/*
 /gin/
 /ripgrep/
 /zod/
+/monolog/
 

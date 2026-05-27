@@ -12,4 +12,10 @@ export {
   symbolRelationsToFiles,
 } from './relations.js';
 export { chunkFile } from './chunker.js';
-export { buildChatContext, applySlideWindow } from './context-builder.js';
+export { buildChatContext, applySlideWindow, setBudget } from './context-builder.js';
+export { CodeGraph } from './graph-engine.js';
+export { detectCommunities } from './community.js';
+export {
+  queryCallers, queryCallees, queryFileNeighbors,
+  queryCommunitySymbols, rankSymbols, scoreSymbol,
+} from './graph-query.js';

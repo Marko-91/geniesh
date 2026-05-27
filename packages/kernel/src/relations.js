@@ -1,20 +1,7 @@
-import { readFile as fsReadFile, writeFile, stat } from 'fs/promises';
-import { dirname, join, extname } from 'path';
+import { stat } from 'fs/promises';
 import { scanDir, readFile } from './fs-utils.js';
-import { extractAllSymbolsWithMetadata } from './symbol-utils.js';
-
-const SOURCE_EXTS = new Set([
-  '.js', '.ts', '.tsx', '.jsx', '.mjs', '.cjs',
-  '.py', '.go', '.rs', '.java', '.cpp', '.c', '.h',
-  '.rb', '.php',
-  '.lisp', '.lsp', '.cl', '.cs', '.fs', '.fsx', '.vb',
-  '.swift', '.kt', '.scala', '.zig', '.lua',
-]);
-
-const RESOLVE_EXTS = [
-  ...SOURCE_EXTS,
-  '.md', '.sh', '.php',
-];
+import { buildGraph, buildChunks, CodeGraph } from './graph-engine.js';
+import { SOURCE_EXTS } from './parsers/index.js';
 
 function fileHash(mtimeMs, size) {
   return `${mtimeMs}-${size}`;
@@ -29,181 +16,35 @@ async function getFileMeta(filePath) {
   }
 }
 
-function pruneStaleKeys(map) {
-  for (const key of Object.keys(map)) {
-    if (map[key].length === 0) delete map[key];
-  }
-}
+export async function buildRelations(dir, prevGraph = null, ignorePatterns = []) {
+  const files = await scanDir(dir, ignorePatterns);
+  const sourceFiles = files.filter(f => SOURCE_EXTS.has(f.slice(f.lastIndexOf('.')).toLowerCase()));
 
-function metadataToV2(entry) {
-  return {
-    name: entry.name,
-    kind: entry.kind,
-    exported: entry.exported,
-    lineRange: entry.lineRange,
-  };
-}
+  const graph = await buildGraph(dir, sourceFiles, prevGraph);
 
-function tryResolve(basePath, knownFiles) {
-  const normalized = basePath.replace(/\\/g, '/');
-  for (const f of knownFiles) {
-    const fn = f.replace(/\\/g, '/');
-    if (fn === normalized || fn === normalized + '/' || fn.startsWith(normalized + '/.')) return f;
-  }
-  const ext = extname(basePath).toLowerCase();
-  if (ext) {
-    if (knownFiles.has(basePath)) return basePath;
-  } else {
-    for (const e of RESOLVE_EXTS) {
-      const withExt = basePath + e;
-      if (knownFiles.has(withExt)) return withExt;
-    }
-  }
-  for (const e of RESOLVE_EXTS) {
-    const index = join(basePath, 'index' + e);
-    if (knownFiles.has(index)) return index;
-  }
-  return null;
-}
-
-function resolveImportPath(mod, sourceDir, knownFiles) {
-  let p = mod.replace(/^['"]+|['"]+$/g, '');
-  if (!p) return null;
-
-  if (p.includes('.') && !p.includes('/') && !p.includes('\\')) {
-    if (p.startsWith('.')) {
-      let relDepth = 0;
-      let clean = p;
-      while (clean.startsWith('.')) {
-        if (clean.startsWith('..')) { relDepth++; clean = clean.slice(1); }
-        else { clean = clean.slice(1); break; }
-      }
-      let baseDir = sourceDir;
-      for (let i = 0; i < relDepth && baseDir.length > 0; i++) {
-        const parent = dirname(baseDir);
-        if (parent === baseDir) break;
-        baseDir = parent;
-      }
-      if (clean) {
-        const r = tryResolve(join(baseDir, clean.replace(/\./g, '/')), knownFiles);
-        if (r) return r;
-      }
-    } else {
-      const r = tryResolve(join(sourceDir, p.replace(/\./g, '/')), knownFiles);
-      if (r) return r;
-    }
+  const contentMap = new Map();
+  for (const file of sourceFiles) {
+    try {
+      const content = await readFile(file);
+      contentMap.set(file, content);
+    } catch {}
   }
 
-  const r = tryResolve(join(sourceDir, p), knownFiles);
-  if (r) return r;
+  buildChunks(graph, sourceFiles, contentMap);
 
-  return null;
-}
-
-function extractImportPaths(content, filePath, knownFiles) {
-  const rawModules = new Set();
-  const sourceDir = dirname(filePath);
-
-  const collect = (re) => {
-    re.lastIndex = 0;
-    let m;
-    while ((m = re.exec(content)) !== null) {
-      if (m[1]) rawModules.add(m[1].trim());
-    }
-  };
-
-  collect(/(?:from|import)\s+['"]([^'"]+)['"]/g);
-  collect(/require\s*\(\s*['"]([^'"]+)['"]\s*\)/g);
-  collect(/#include\s+"([^"]+)"/g);
-  collect(/require(?:_relative)?\s+['"]([^'"]+)['"]/g);
-  collect(/\((?:require|import)\s+'([^']+)'\)/g);
-  collect(/^\s*import\s+(\S+)/gm);
-  collect(/^\s*from\s+(\S+)\s+import/gm);
-  collect(/^\s*use\s+([^;]+)/gm);
-
-  const resolved = [];
-  for (let mod of rawModules) {
-    mod = mod.replace(/\\/g, '/');
-    let r = resolveImportPath(mod, sourceDir, knownFiles);
-    if (!r && mod.includes('/')) {
-      const lastSeg = mod.split('/').pop();
-      r = resolveImportPath(lastSeg, sourceDir, knownFiles);
-    }
-    if (!r && mod.includes('/')) {
-      const dirBase = sourceDir.split(/[/\\]/).pop();
-      const normPath = mod.replace(new RegExp('^' + dirBase + '/'), '');
-      r = resolveImportPath(normPath, sourceDir, knownFiles);
-    }
-    if (r && !resolved.includes(r)) resolved.push(r);
-  }
-  return resolved;
-}
-
-const SOURCE_FILE_CACHE = new Map();
-function isSourceFile(file) {
-  if (SOURCE_FILE_CACHE.has(file)) return SOURCE_FILE_CACHE.get(file);
-  const ext = extname(file).toLowerCase();
-  const result = SOURCE_EXTS.has(ext);
-  SOURCE_FILE_CACHE.set(file, result);
-  return result;
-}
-
-export async function buildRelations(dir, prevMeta = {}, prevByFile = {}, prevByImports = {}) {
-  const files = await scanDir(dir);
-  const bySymbol = {};
-  const byFile = {};
   const fileMeta = {};
-  const byImports = {};
-  const byImporters = {};
-  const knownFiles = new Set(files);
-
-  for (const file of files) {
-    if (!isSourceFile(file)) continue;
-
+  for (const file of sourceFiles) {
     const meta = await getFileMeta(file);
     if (meta) fileMeta[file] = meta;
-
-    // Unchanged file — carry forward old entries, skip I/O
-    if (prevMeta[file]?.hash === meta?.hash && Object.hasOwn(prevByFile, file)) {
-      byFile[file] = prevByFile[file];
-      if (Object.hasOwn(prevByImports, file)) byImports[file] = prevByImports[file];
-      continue;
-    }
-
-    let content;
-    try { content = await readFile(file); } catch { continue; }
-
-    const symbols = extractAllSymbolsWithMetadata(content);
-    const fileEntry = symbols.map(metadataToV2);
-    byFile[file] = fileEntry;
-
-    const imports = extractImportPaths(content, file, knownFiles);
-    if (imports.length > 0) byImports[file] = imports;
   }
 
-  // Rebuild bySymbol from merged byFile
-  for (const [file, symbols] of Object.entries(byFile)) {
-    for (const sym of symbols) {
-      if (!Object.hasOwn(bySymbol, sym.name)) bySymbol[sym.name] = [];
-      bySymbol[sym.name].push({ file, kind: sym.kind, exported: sym.exported, lineRange: sym.lineRange });
-    }
-  }
-
-  // Rebuild byImporters from merged byImports
-  for (const [file, importedFiles] of Object.entries(byImports)) {
-    for (const impFile of importedFiles) {
-      if (!Object.hasOwn(byImporters, impFile)) byImporters[impFile] = [];
-      byImporters[impFile].push(file);
-    }
-  }
-
-  return { version: 2, bySymbol, byFile, fileMeta, byImports, byImporters };
+  return { graph, fileMeta };
 }
 
-export function fileRelationsToNames(byFileEntry) {
-  return byFileEntry ? byFileEntry.map(s => s.name) : [];
+export function fileRelationsToNames() {
+  return [];
 }
 
-export function symbolRelationsToFiles(bySymbolEntry) {
-  return bySymbolEntry ? bySymbolEntry.map(e => e.file) : [];
+export function symbolRelationsToFiles() {
+  return [];
 }

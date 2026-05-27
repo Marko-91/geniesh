@@ -1,5 +1,5 @@
 import { loadIndex } from './indexer.js';
-import { loadRelations, relationsExist } from './relations.js';
+import { loadGraph, graphExists } from './relations.js';
 import { scanDir } from './fs-utils.js';
 import { runGenerate } from './runner.js';
 import { writeFile } from 'fs/promises';
@@ -202,11 +202,11 @@ ALL SYMBOLS IN CODEBASE (use ONLY these as expected_symbols):`;
 
 export async function generateBenchmark(benchmarkFile, dir, model) {
   const allFiles = await scanDir(dir);
-  const hasRelations = await relationsExist();
-  if (!hasRelations) {
-    throw new Error(`No relations found. Run geniesh index --dir ${dir} first`);
+  const hasGraph = await graphExists();
+  if (!hasGraph) {
+    throw new Error(`No graph found. Run geniesh index --dir ${dir} first`);
   }
-  const relations = await loadRelations();
+  const relations = await loadGraph();
 
   const summary = summarize(relations, allFiles);
   const symbolKeys = summarizeSymbolKeys(relations, allFiles);
