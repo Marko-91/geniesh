@@ -46,10 +46,16 @@ const ENGLISH_PASCAL_NOISE = new Set([
 
 const KIND_ORDER = { class: 0, function: 1, variable: 2, reference: 3 };
 
+const _fileCache = new Map();
+
 async function readFileLines(file, startLine, endLine) {
   try {
-    const content = await readFile(file);
-    const lines = content.split('\n');
+    let lines = _fileCache.get(file);
+    if (!lines) {
+      const content = await readFile(file);
+      lines = content.split('\n');
+      _fileCache.set(file, lines);
+    }
     return lines.slice(startLine - 1, endLine).join('\n');
   } catch {
     return null;
