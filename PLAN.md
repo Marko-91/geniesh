@@ -155,3 +155,16 @@ geniesh graph --viz
 ```
 
 This is purely additive — not required for the core feature.
+
+## Future Optimizations
+
+### Concurrent File Parsing
+- **Problem**: Graph build parses files sequentially (one `await parseFile` per file in `graph-engine.js:378-386`). A single slow/hanging file blocks the entire pipeline.
+- **Fix**: Replace the sequential `for` loop with concurrent parsing (e.g., `Promise.all` with concurrency limit of 4–8). Maintain total ordering for progress reporting via a counter.
+- **Risks**: WASM tree-sitter parsers may not be thread-safe; each concurrent branch needs its own WASM parser instance.
+- **Priority**: Post-v3.0 (nice-to-have speedup once the 30s timeout catches pathological files).
+
+### Streaming LLM Output (Done — v3.0)
+- **Problem**: `streamResponse` silently accumulated all tokens, then replayed them with a fake typewriter effect (6ms/char). High latency perceived by user.
+- **Fix**: Feed tokens into `StreamingMarkdownParser.feed()` as they arrive from the NDJSON stream. Stop spinner on first token; user sees real-time formatted output.
+- **Status**: Implemented in `src/runner.js` alongside the typewriter removal.

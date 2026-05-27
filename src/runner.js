@@ -1,4 +1,4 @@
-import { formatMarkdown } from './md-parser.js';
+import { StreamingMarkdownParser } from './md-parser.js';
 import ora from 'ora';
 import { spinners } from './spinners-ora.js';
 
@@ -128,6 +128,16 @@ async function streamResponse(res, tokenExtractor) {
   const decoder = new TextDecoder();
   let buffer = '';
   let full = '';
+  let started = false;
+  const parser = new StreamingMarkdownParser();
+
+  const write = (text) => {
+    if (!started) {
+      spinner.stop();
+      started = true;
+    }
+    process.stdout.write(text);
+  };
 
   try {
     while (true) {
@@ -135,28 +145,26 @@ async function streamResponse(res, tokenExtractor) {
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
-      buffer = lines.pop(); // retain incomplete trailing line
+      buffer = lines.pop();
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
           const obj = JSON.parse(line);
           const token = tokenExtractor(obj);
-          if (token) full += token;
+          if (token) {
+            full += token;
+            parser.feed(token, write);
+          }
         } catch {
           // skip malformed line
         }
       }
     }
   } finally {
-    spinner.stop();
+    if (!started) spinner.stop();
   }
 
-  // Typewriter: print formatted output character-by-character
-  const formatted = formatMarkdown(full);
-  for (const ch of formatted) {
-    process.stdout.write(ch);
-    await new Promise(r => setTimeout(r, 6));
-  }
+  parser.flush(write);
   process.stdout.write('\n');
   return full;
 }
