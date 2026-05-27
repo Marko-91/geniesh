@@ -23,6 +23,8 @@ import { webSearch, formatSearchResults } from './web-search.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
 import { extractSymbols } from './symbol-utils.js';
 import { scanDir, extractFileRefs } from './fs-utils.js';
+import { parseFileEdits, formatDiff, applyEdit } from './diff-apply.js';
+import { parseShellCommands, runShellCommand, formatCommandResult } from './terminal-agent.js';
 import { execSync } from 'child_process';
 import ora from 'ora';
 
@@ -126,7 +128,20 @@ program
           '  layers unless the existing code demonstrably fails at its task.\n' +
           '- If the user message contains a [Web page content] section,\n' +
           '  the content was fetched from a URL they asked about. Use it to answer\n' +
-          '  their question — it is as authoritative as the codebase context.',
+          '  their question — it is as authoritative as the codebase context.\n' +
+          '- You can propose file edits by outputting a fenced code block with\n' +
+          '  the language tag followed by a colon and the file path, then the\n' +
+          '  COMPLETE new file content. Example:\n' +
+          '    ```js:src/app.js\n' +
+          '    const express = require("express");\n' +
+          '    ```\n' +
+          '- You can execute shell commands by outputting a fenced code block\n' +
+          '  with the bash language tag. Example:\n' +
+          '    ```bash\n' +
+          '    npm install express\n' +
+          '    ```\n' +
+          '  When running commands, you will see the output and can decide what\n' +
+          '  to do next step by step.',
       },
     ];
 
@@ -153,6 +168,8 @@ program
     if (graph) console.log('\x1b[90m   • Budget is ~32k tok default (--budget <chars> to override)\x1b[0m');
     console.log('\x1b[90m   • Paste a URL to fetch its content as context\x1b[0m');
     console.log('\x1b[90m   • /search <query> to search the web via DuckDuckGo\x1b[0m');
+    console.log('\x1b[90m   • Ask for code changes — LLM proposes edits, you confirm\x1b[0m');
+    console.log('\x1b[90m   • Ask to run commands — LLM writes them, you approve\x1b[0m');
     console.log('\x1b[90m   • Type \x1b[33mexit\x1b[90m or Ctrl+C to quit\x1b[0m\n');
 
     process.on('SIGINT', () => {
@@ -313,6 +330,51 @@ program
       try {
         const reply = await runChat(messages);
         messages.push({ role: 'assistant', content: reply });
+
+        // ─ Post-response: detect edits and commands ──────────────────────────────
+        let currentReply = reply;
+        let agentLoop = true;
+        while (agentLoop) {
+          agentLoop = false;
+
+          // Check for file edits
+          const edits = parseFileEdits(currentReply, allFiles);
+          for (const edit of edits) {
+            const oldContent = await readFile(edit.file).catch(() => '');
+            const diff = formatDiff(oldContent, edit.content, edit.file);
+            if (!diff) continue;
+            process.stdout.write(`\n${diff}\n`);
+            const answer = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
+            if (!answer || answer.toLowerCase() === 'y' || answer === '') {
+              await applyEdit(edit.file, edit.content);
+              process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
+            } else {
+              process.stdout.write(`\x1b[33mSkipped ${edit.file}\x1b[0m\n`);
+            }
+          }
+
+          // Check for shell commands
+          const commands = parseShellCommands(currentReply);
+          for (const cmd of commands) {
+            process.stdout.write(`\n\x1b[90m$ ${cmd}\x1b[0m\n`);
+            const answer = await ask(`Run this command? [\x1b[1mY\x1b[0m/n] `);
+            if (!answer || answer.toLowerCase() === 'y' || answer === '') {
+              const result = runShellCommand(cmd);
+              process.stdout.write(`\x1b[90m${result.output.slice(0, 2000)}${result.output.length > 2000 ? '\n... (truncated)' : ''}\x1b[0m\n`);
+              process.stdout.write(`\x1b[90m  → exit ${result.exitCode} (${result.elapsed})\x1b[0m\n`);
+              // Feed output back to LLM
+              const feedback = `Command executed:\n\`\`\`\n$ ${cmd}\n${result.output}\n\`\`\`\nExit code: ${result.exitCode}\n\nContinue with the next step.`;
+              messages.push({ role: 'user', content: feedback });
+              process.stdout.write(`\n\x1b[36mAssistant\x1b[0m:\n`);
+              currentReply = await runChat(messages);
+              messages.push({ role: 'assistant', content: currentReply });
+              process.stdout.write('\n');
+              agentLoop = true; // Check again for more commands
+            } else {
+              process.stdout.write(`\x1b[33mSkipped\x1b[0m\n`);
+            }
+          }
+        }
       } catch (err) {
         console.error(`\nError: ${err.message}`);
         messages.pop();
