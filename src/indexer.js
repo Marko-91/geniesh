@@ -1,11 +1,9 @@
 import { performance } from 'perf_hooks';
 import { readFile as fsReadFile, unlink, access, stat } from 'fs/promises';
-import { createReadStream, createWriteStream } from 'fs';
+import { createWriteStream } from 'fs';
 import { chain } from 'stream-chain';
-import { parserStream } from 'stream-json';
 import { disassembler } from 'stream-json/disassembler.js';
 import { stringer } from 'stream-json/stringer.js';
-import { Assembler } from 'stream-json/Assembler.js';
 import { scanDir, readFile as readSourceFile } from './fs-utils.js';
 import { chunkFile } from './chunker.js';
 import { embed, embedBatch } from './embedder.js';
@@ -28,18 +26,10 @@ async function concurrentMap(concurrency, items, fn) {
   return results;
 }
 
-async function streamParseIndex(stream) {
-  const pipeline = chain([stream, parserStream()]);
-  const assembler = new Assembler();
-  for await (const tok of pipeline) {
-    assembler.consume(tok);
-  }
-  return assembler.current || [];
-}
-
 async function tryLoadIndex() {
   try {
-    return await streamParseIndex(createReadStream(INDEX_FILE));
+    const content = await fsReadFile(INDEX_FILE, 'utf-8');
+    return JSON.parse(content);
   } catch {
     return null;
   }
@@ -129,7 +119,8 @@ export async function buildIndex(dir) {
 
 export async function loadIndex() {
   try {
-    return await streamParseIndex(createReadStream(INDEX_FILE));
+    const content = await fsReadFile(INDEX_FILE, 'utf-8');
+    return JSON.parse(content);
   } catch (err) {
     if (err.code === 'ENOENT') {
       throw new Error(`Index file "${INDEX_FILE}" not found. Run: geniesh index --dir <path>`);
