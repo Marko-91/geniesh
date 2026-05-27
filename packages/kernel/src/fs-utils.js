@@ -8,6 +8,8 @@ const IGNORED_DIRS = new Set([
   'target', '.gradle', 'Pods', '.build', 'deps', '_build',
   'tmp', 'temp', '.idea', '.vscode', '.DS_Store',
   'bazel-bin', 'bazel-out', 'bazel-genfiles', 'bazel-testlogs',
+  // Cloned benchmark repos — should not be indexed when geniesh scans itself
+  'express', 'flask', 'gin', 'ripgrep', 'zod', 'monolog', 'graphify-out',
 ]);
 
 const ALLOWED_DOT_DIRS = new Set(['.github']);
