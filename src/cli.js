@@ -145,7 +145,7 @@ program
     console.log('\x1b[90m   • Mention a file path to load it as full context:  "look at lib/application.js"\x1b[0m');
     console.log('\x1b[90m   • Ask about specific symbols:                      "how does Router.handle work?"\x1b[0m');
     console.log('\x1b[90m   • Use concrete function/method names for AST graph\x1b[0m');
-    if (graph) console.log('\x1b[90m   • Budget is 128k chars default (--budget N to override)\x1b[0m');
+    if (graph) console.log('\x1b[90m   • Budget is ~32k tok default (--budget <chars> to override)\x1b[0m');
     console.log('\x1b[90m   • Type \x1b[33mexit\x1b[90m or Ctrl+C to quit\x1b[0m\n');
 
     process.on('SIGINT', () => {
@@ -184,15 +184,21 @@ program
       let contextText = '';
       try {
         if (opts.budget && graph) graph._budget = opts.budget;
-        const { contextString } = await buildChatContext(trimmed, index, allFiles, graph, fileRefs, search);
+        const { contextString, trace } = await buildChatContext(trimmed, index, allFiles, graph, fileRefs, search);
         contextText = contextString;
-        ctxSpinner.succeed(
-          symbols.length
-            ? `Context ready — BFS traversal for: ${symbols.join(', ')}`
-            : fileRefs.length
-              ? `Context ready — file-ref: ${fileRefs.map(f => basename(f)).join(', ')}`
-              : 'Context ready — RAG',
-        );
+        const bfsCount = trace.filter(t => t.method === 'bfs').length;
+        const ragCount = trace.filter(t => t.method === 'rag').length;
+        const refCount = trace.filter(t => t.method === 'file-ref').length;
+        const tokenEst = Math.round(contextString.length / 4);
+        const budget = graph?._budget || 128000;
+        const pct = Math.round(contextString.length / budget * 100);
+        ctxSpinner.succeed(`Context: ${trace.length} windows` +
+          (bfsCount ? ` (${bfsCount} BFS` : '') +
+          (ragCount ? ` + ${ragCount} RAG` : '') +
+          (refCount ? ` + ${refCount} ref` : '') +
+          ((bfsCount || ragCount || refCount) ? ')' : '') +
+          ` — ${tokenEst.toLocaleString()} tok` +
+          (graph ? ` (${pct}%)` : ''));
 
       } catch (err) {
         ctxSpinner.warn(`Context build failed (${err.message}), falling back to plain message`);

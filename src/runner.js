@@ -1,4 +1,4 @@
-import { StreamingMarkdownParser } from './md-parser.js';
+
 import ora from 'ora';
 import { spinners } from './spinners-ora.js';
 
@@ -129,15 +129,6 @@ async function streamResponse(res, tokenExtractor) {
   let buffer = '';
   let full = '';
   let started = false;
-  const parser = new StreamingMarkdownParser();
-
-  const write = (text) => {
-    if (!started) {
-      spinner.stop();
-      started = true;
-    }
-    process.stdout.write(text);
-  };
 
   try {
     while (true) {
@@ -152,8 +143,18 @@ async function streamResponse(res, tokenExtractor) {
           const obj = JSON.parse(line);
           const token = tokenExtractor(obj);
           if (token) {
-            full += token;
-            parser.feed(token, write);
+            let delta;
+            if (full && token.startsWith(full)) {
+              delta = token.slice(full.length);
+              full = token;
+            } else {
+              delta = token;
+              full += token;
+            }
+            if (delta) {
+              if (!started) { spinner.stop(); started = true; }
+              process.stdout.write(delta);
+            }
           }
         } catch {
           // skip malformed line
@@ -164,7 +165,6 @@ async function streamResponse(res, tokenExtractor) {
     if (!started) spinner.stop();
   }
 
-  parser.flush(write);
   process.stdout.write('\n');
   return full;
 }

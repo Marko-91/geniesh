@@ -107,15 +107,19 @@ function formatTrace(trace, bfsLogs, projectRoot) {
 }
 
 function tryAdd(sections, seen, perFile, used, budget, maxPerFile, file, startLine, endLine, text, label, traceTarget) {
-  const key = `${file}:${startLine}`;
+  const key = `${file}:${startLine}-${endLine}`;
   if (seen.has(key)) return false;
   const fileUsed = perFile.get(file) || 0;
   if (fileUsed >= maxPerFile) return false;
   const block = `// ${label} (lines ${startLine}–${endLine})\n${text}\n`;
   if (used.value + block.length > budget) return false;
   if (fileUsed + block.length > maxPerFile) return false;
+  // content-based dedup: same file + overlapping text
+  const contentFingerprint = `${file}:${text.slice(0, 80)}`;
+  if (seen.has(contentFingerprint)) return false;
   sections.push(block);
   seen.add(key);
+  seen.add(contentFingerprint);
   perFile.set(file, fileUsed + block.length);
   used.value += block.length;
   if (traceTarget && traceTarget.length !== undefined) {
@@ -191,8 +195,9 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
   const seenFiles = new Set();
   let bfsRound = 0;
   const queryTerms = extractQueryTerms(question);
+  const MAX_BFS_ROUNDS = 2;
 
-  while (used.value < budget && frontier.length > 0) {
+  while (used.value < budget && frontier.length > 0 && bfsRound < MAX_BFS_ROUNDS) {
     const toProcess = frontier.filter(s => !seenSymbols.has(s));
     if (toProcess.length === 0) break;
 
@@ -225,7 +230,7 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
 
         // Get callers
         const callers = graph ? graph.getCallers(symNode.id) : [];
-        for (const caller of callers.slice(0, 3)) {
+        for (const caller of callers.slice(0, 2)) {
           if (used.value >= budget) break;
           if (!caller.at || !caller.node?.file) continue;
           const [sl, el] = caller.at;
@@ -241,7 +246,7 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
 
         // Get callees
         const callees = graph ? graph.getCallees(symNode.id) : [];
-        for (const callee of callees.slice(0, 3)) {
+        for (const callee of callees.slice(0, 2)) {
           if (used.value >= budget) break;
           if (!callee.at || !callee.node?.file) continue;
           const [sl, el] = callee.at;
@@ -288,7 +293,7 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
       }
 
       const ranked = rankSymbols(graph, newCandidates, queryTerms, seenSymbols);
-      const MAX_FRONTIER = 60;
+      const MAX_FRONTIER = 15;
       const nextFrontier = ranked.slice(0, MAX_FRONTIER).map(r => r.node.name);
 
       if (nextFrontier.length > 0) {
