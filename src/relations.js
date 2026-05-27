@@ -1,6 +1,5 @@
-import { readFile as fsReadFile, access } from 'fs/promises';
-import { createWriteStream } from 'fs';
-import { Readable } from 'stream';
+import { access } from 'fs/promises';
+import { createReadStream, createWriteStream } from 'fs';
 import { chain } from 'stream-chain';
 import { parserStream } from 'stream-json';
 import { disassembler } from 'stream-json/disassembler.js';
@@ -29,9 +28,9 @@ export async function saveGraph(graph) {
   });
 }
 
-async function streamParseGraph(buf) {
+async function streamParseGraph(readable) {
   const graph = new CodeGraph();
-  const pipeline = chain([Readable.from(buf), parserStream()]);
+  const pipeline = chain([readable, parserStream()]);
 
   let topKey = null;
   let depth = 0;
@@ -118,16 +117,14 @@ async function streamParseGraph(buf) {
 
 export async function tryLoadGraph() {
   try {
-    const buf = await fsReadFile(GRAPH_FILE);
-    return await streamParseGraph(buf);
+    return await streamParseGraph(createReadStream(GRAPH_FILE));
   } catch {
     return null;
   }
 }
 
 export async function loadGraph() {
-  const buf = await fsReadFile(GRAPH_FILE);
-  return await streamParseGraph(buf);
+  return await streamParseGraph(createReadStream(GRAPH_FILE));
 }
 
 export async function graphExists() {
