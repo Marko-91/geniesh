@@ -398,19 +398,22 @@ program
         let currentReply = reply;
 
         // Auto-retry if the LLM refused to edit but was asked to make a change
-        if (editMatch && (!currentReply.includes('SEARCH') && !currentReply.includes('```'))) {
+        let retries = 0;
+        while (editMatch && retries < 2) {
+          const hasEditBlock = currentReply.includes('SEARCH') || /```\w+:[^\s]/.test(currentReply);
+          if (hasEditBlock) break;
           const refusalPatterns = /\b(cannot|can't|i don't see|i can see fragments|not able to|unable to)\b/i;
-          if (refusalPatterns.test(currentReply)) {
-            const retry = '\n[System] You MUST output a SEARCH/REPLACE block (not just describe the change). ' +
-              'The full file content is provided in the file-ref section above. ' +
-              'Copy the exact text from the file-ref section and use SEARCH/REPLACE to make the change. ' +
-              'Do NOT say you cannot edit files — you have edit capability in this environment.\n' +
-              'Output ONLY the SEARCH/REPLACE block.';
-            messages.push({ role: 'user', content: retry });
-            process.stdout.write(`\n\x1b[36mAssistant\x1b[0m:\n`);
-            currentReply = await runChat(messages);
-            messages.push({ role: 'assistant', content: currentReply });
-          }
+          if (!refusalPatterns.test(currentReply)) break;
+          retries++;
+          const retry = '\n[System] You MUST output a SEARCH/REPLACE block (not just describe the change). ' +
+            'The full file content is provided in the file-ref section above. ' +
+            'Copy the exact text from the file-ref section and use SEARCH/REPLACE to make the change. ' +
+            'Do NOT say you cannot edit files — you have edit capability in this environment.\n' +
+            'Output ONLY the SEARCH/REPLACE block.';
+          messages.push({ role: 'user', content: retry });
+          process.stdout.write(`\n\x1b[36mAssistant\x1b[0m:\n`);
+          currentReply = await runChat(messages);
+          messages.push({ role: 'assistant', content: currentReply });
         }
 
         let agentLoop = true;
