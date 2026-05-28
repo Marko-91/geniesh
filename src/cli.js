@@ -404,12 +404,21 @@ program
           if (hasEditBlock) break;
           const refusalPatterns = /\b(cannot|can't|i don't see|i can see fragments|not able to|unable to)\b/i;
           if (!refusalPatterns.test(currentReply)) break;
+
+          // Read the target file to give the LLM exact text to match in SEARCH
+          const editFile = editMatch[1].replace(/[.,;:!?)]$/, '');
+          const absFile = allFiles.find(f => {
+            const fn = f.replace(/\\/g, '/').toLowerCase();
+            return fn.endsWith('/' + editFile.toLowerCase()) || fn.includes('/' + editFile.toLowerCase());
+          });
+          let filePreview = '';
+          if (absFile) {
+            try { filePreview = (await readFile(absFile)).split('\n').slice(0, 20).join('\n'); } catch {}
+          }
+
           retries++;
-          const retry = '\n[System] You MUST output a SEARCH/REPLACE block (not just describe the change). ' +
-            'The full file content is provided in the file-ref section above. ' +
-            'Copy the exact text from the file-ref section and use SEARCH/REPLACE to make the change. ' +
-            'Do NOT say you cannot edit files — you have edit capability in this environment.\n' +
-            'Output ONLY the SEARCH/REPLACE block.';
+          const retry = '\n[System] Output ONLY a SEARCH/REPLACE block. Do NOT describe the change — just the block.' +
+            (filePreview ? '\nThe first 20 lines of the file are:\n```\n' + filePreview + '\n```\nUse SEARCH to match the EXACT text above, and REPLACE with it preceded by "// Express.js application module\n".' : '\nRead the file-ref section and copy the exact text for SEARCH.');
           messages.push({ role: 'user', content: retry });
           process.stdout.write(`\n\x1b[36mAssistant\x1b[0m:\n`);
           currentReply = await runChat(messages);
