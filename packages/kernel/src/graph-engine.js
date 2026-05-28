@@ -6,8 +6,14 @@ import { extname, dirname, join } from 'path';
 import { stat } from 'fs/promises';
 
 function nodeId(file, name) {
-  return name ? `sym://${file}:${name}` : `file://${file}`;
+  const f = file.replace(/\\/g, '/');
+  return name ? `sym://${f}:${name}` : `file://${f}`;
 }
+
+const KIND_MAP = { file: 0, class: 1, function: 2, variable: 3, reference: 4 };
+const KIND_REVERSE = ['file', 'class', 'function', 'variable', 'reference'];
+const RELATION_MAP = { imports: 0, calls: 1, extends: 2, defines: 3, references: 4 };
+const RELATION_REVERSE = ['imports', 'calls', 'extends', 'defines', 'references'];
 
 export class CodeGraph {
   constructor() {
@@ -33,6 +39,7 @@ export class CodeGraph {
   }
 
   addFileNode(file) {
+    file = file.replace(/\\/g, '/');
     const id = nodeId(file);
     if (!this.nodes.has(id)) {
       this.nodes.set(id, { id, type: 'file', file, kind: 'file' });
@@ -133,6 +140,7 @@ export class CodeGraph {
   }
 
   addSymbolNode(name, file, kind, lineRange, exported) {
+    file = file.replace(/\\/g, '/');
     const id = nodeId(file, name);
     this.addNode(id, {
       type: 'symbol', name, file, kind, lineRange, exported,
@@ -141,16 +149,53 @@ export class CodeGraph {
   }
 
   toJSON() {
-    const nodes = {};
-    for (const [id, node] of this.nodes) {
-      const { id: _, ...rest } = node;
-      nodes[id] = rest;
+    // Build file index
+    const fileSet = new Set();
+    for (const node of this.nodes.values()) {
+      if (node.file) fileSet.add(node.file.replace(/\\/g, '/'));
     }
+    const files = [...fileSet];
+    const fileIdx = new Map(files.map((f, i) => [f, i]));
+
+    // Serialize nodes as compact arrays
+    const nodeArr = [];
+    const nodeIdToIdx = new Map();
+    let idx = 0;
+    for (const [id, node] of this.nodes) {
+      const file = node.file ? node.file.replace(/\\/g, '/') : null;
+      const fi = file != null ? fileIdx.get(file) : -1;
+      let entry;
+      if (node.type === 'file') {
+        entry = [0, fi];
+      } else {
+        const ki = node.kind != null ? (KIND_MAP[node.kind] ?? 3) : 3;
+        const lr = node.lineRange || null;
+        entry = [1, fi, node.name || '', ki, lr ? lr[0] : null, lr ? lr[1] : null, node.exported ? 1 : 0, node.community != null ? node.community : null];
+      }
+      nodeArr.push(entry);
+      nodeIdToIdx.set(id, idx);
+      idx++;
+    }
+
+    // Serialize edges as compact arrays
+    const edgeArr = [];
+    for (const edge of this.edges) {
+      const fi = nodeIdToIdx.get(edge.from);
+      const ti = nodeIdToIdx.get(edge.to);
+      if (fi == null || ti == null) continue;
+      const ri = RELATION_MAP[edge.relation] ?? 0;
+      const at = edge.at || null;
+      edgeArr.push([fi, ti, ri, at ? at[0] : null, at ? at[1] : null]);
+    }
+
     return {
-      version: 3,
-      nodes,
-      edges: this.edges,
-      fileHashes: Object.fromEntries(this.fileHashes),
+      version: 4,
+      files,
+      nodes: nodeArr,
+      edges: edgeArr,
+      fileHashes: Object.fromEntries(
+        [...this.fileHashes.entries()].map(([k, v]) => [k.replace(/\\/g, '/'), v])
+      ),
       communityCount: this.communityCount,
     };
   }
@@ -159,18 +204,75 @@ export class CodeGraph {
     const graph = new CodeGraph();
     if (!json || !json.nodes) return graph;
 
-    for (const [id, data] of Object.entries(json.nodes)) {
-      graph.nodes.set(id, { ...data, id });
+    if (json.version === 4 && Array.isArray(json.nodes)) {
+      // Compact v4 format — expand
+      const files = json.files || [];
+      const filePathFor = (idx) => idx >= 0 && idx < files.length ? files[idx] : null;
+      for (let i = 0; i < json.nodes.length; i++) {
+        const entry = json.nodes[i];
+        const type = entry[0]; // 0=file, 1=symbol
+        const fileIdx = entry[1];
+        const file = filePathFor(fileIdx);
+        if (type === 0) {
+          // File node
+          const id = nodeId(file);
+          const data = { id, type: 'file', file, kind: 'file' };
+          graph.nodes.set(id, data);
+        } else {
+          // Symbol node
+          const name = entry[2] || '';
+          const kindIdx = entry[3] != null ? entry[3] : 3;
+          const lineStart = entry[4] || null;
+          const lineEnd = entry[5] || null;
+          const exported = entry[6] === 1;
+          const community = entry[7] != null ? entry[7] : null;
+          const id = nodeId(file, name);
+          const data = {
+            id, type: 'symbol', file, name,
+            kind: KIND_REVERSE[kindIdx] || 'variable',
+            lineRange: lineStart != null && lineEnd != null ? [lineStart, lineEnd] : undefined,
+            exported,
+          };
+          if (community != null) data.community = community;
+          graph.nodes.set(id, data);
+        }
+      }
+
+      // Rebuild edges
+      for (const edge of json.edges || []) {
+        const fromNode = json.nodes[edge[0]];
+        const toNode = json.nodes[edge[1]];
+        if (!fromNode || !toNode) continue;
+        const fromFile = filePathFor(fromNode[1]);
+        const toFile = filePathFor(toNode[1]);
+        const fromName = fromNode[0] === 0 ? null : fromNode[2] || '';
+        const toName = toNode[0] === 0 ? null : toNode[2] || '';
+        const fromId = fromName ? `sym://${fromFile}:${fromName}` : `file://${fromFile}`;
+        const toId = toName ? `sym://${toFile}:${toName}` : `file://${toFile}`;
+        const relation = RELATION_REVERSE[edge[2]] || 'references';
+        const at = edge[3] != null && edge[4] != null ? [edge[3], edge[4]] : null;
+        graph.addEdge(fromId, toId, relation, at);
+      }
+
+      graph.fileHashes = new Map(
+        Object.entries(json.fileHashes || {}).map(([k, v]) => [k.replace(/\\/g, '/'), v])
+      );
+      graph.communityCount = json.communityCount || 0;
+    } else {
+      // Legacy v3 format — expand from dict
+      for (const [id, data] of Object.entries(json.nodes)) {
+        const normalized = { ...data, id };
+        if (normalized.file) normalized.file = normalized.file.replace(/\\/g, '/');
+        graph.nodes.set(id, normalized);
+      }
+      for (const edge of json.edges || []) {
+        graph.addEdge(edge.from, edge.to, edge.relation, edge.at);
+      }
+      graph.fileHashes = new Map(
+        Object.entries(json.fileHashes || {}).map(([k, v]) => [k.replace(/\\/g, '/'), v])
+      );
+      graph.communityCount = json.communityCount || 0;
     }
-    for (const edge of json.edges || []) {
-      graph.edges.push(edge);
-      if (!graph.adj.has(edge.from)) graph.adj.set(edge.from, []);
-      graph.adj.get(edge.from).push({ to: edge.to, relation: edge.relation, at: edge.at });
-      if (!graph.revAdj.has(edge.to)) graph.revAdj.set(edge.to, []);
-      graph.revAdj.get(edge.to).push({ from: edge.from, relation: edge.relation, at: edge.at });
-    }
-    graph.fileHashes = new Map(Object.entries(json.fileHashes || {}));
-    graph.communityCount = json.communityCount || 0;
     return graph;
   }
 }
@@ -180,12 +282,13 @@ function fileHash(mtimeMs, size) {
 }
 
 function copyFileGraph(graph, prevGraph, file) {
+  file = file.replace(/\\/g, '/');
   const fileId = nodeId(file);
   if (prevGraph.nodes.has(fileId)) {
     graph.nodes.set(fileId, { ...prevGraph.nodes.get(fileId) });
   }
   for (const [id, node] of prevGraph.nodes) {
-    if (node.file === file && node.type === 'symbol') {
+    if ((node.file || '').replace(/\\/g, '/') === file && node.type === 'symbol') {
       graph.nodes.set(id, { ...node, id });
     }
   }
@@ -196,7 +299,7 @@ function copyFileGraph(graph, prevGraph, file) {
     const toFile = edge.to.startsWith('sym://')
       ? decodeURIComponent(edge.to.slice(6)).split(':')[0]
       : decodeURIComponent(edge.to.slice(7));
-    if (fromFile === file || toFile === file) {
+    if (fromFile.replace(/\\/g, '/') === file || toFile.replace(/\\/g, '/') === file) {
       graph.edges.push({ ...edge });
       if (!graph.adj.has(edge.from)) graph.adj.set(edge.from, []);
       graph.adj.get(edge.from).push({ to: edge.to, relation: edge.relation, at: edge.at });
@@ -376,7 +479,7 @@ export async function buildGraph(dir, files, prevGraph = null, onProgress = null
     try { content = await readFile(file); } catch { done++; continue; }
     const result = await parseFileWithTimeout(content, file, done, total, onProgress);
     if (!result) continue;
-    result.file = file;
+    result.file = file.replace(/\\/g, '/');
     result.ext = ext;
     result.hash = hash;
     result.importBindings = extractImportBindings(content, ext);
