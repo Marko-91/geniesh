@@ -131,6 +131,9 @@ program
           '- If the user message contains a [Web page content] section,\n' +
           '  the content was fetched from a URL they asked about. Use it to answer\n' +
           '  their question — it is as authoritative as the codebase context.\n' +
+          '- In the codebase context above, sections labeled "file-ref:" contain\n' +
+          '  the ENTIRE file content (not just a window). Use the full content\n' +
+          '  from these sections when you need to propose SEARCH/REPLACE edits.\n' +
           '- To make changes, you MUST output edits using one of these formats.\n' +
           '  They WILL be detected and offered to the user for approval.\n' +
           '  1) Search/replace (for targeted changes — preferred):\n' +
@@ -291,6 +294,20 @@ program
       // ─ Build context ─────────────────────────────────────────────────────────
       const symbols = extractSymbols(trimmed);
       const fileRefs = extractFileRefs(trimmed, allFiles);
+
+      // Auto-detect edit intent: if question mentions editing and a file path,
+      // load the full file so the LLM can see all content
+      const editFilePattern = /(?:edit|change|modify|add|update|fix|remove|delete|append|prepend|insert)\s.*?([^\s,;]+\.\w+)/i;
+      const editIntent = trimmed.match(editFilePattern);
+      if (editIntent) {
+        const candidate = editIntent[1].replace(/[.,;:!?)]$/, '');
+        // Try to find the file in allFiles
+        const matchFile = allFiles.find(f => f.replace(/\\/g, '/').toLowerCase().includes(candidate.toLowerCase())
+          || f.split(/[/\\]/).pop().toLowerCase() === candidate.toLowerCase());
+        if (matchFile && !fileRefs.includes(matchFile)) {
+          fileRefs.push(matchFile);
+        }
+      }
       const ctxSpinner = ora({
         text: symbols.length
           ? `Building context (BFS + RAG: ${symbols.join(', ')})…`
