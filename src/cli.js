@@ -115,8 +115,28 @@ program
         role: 'system',
         content:
           'You are a senior software engineer with full read/write access to the\n' +
-          'codebase. When asked to make changes, you CAN and SHOULD propose edits\n' +
-          'in the formats below — they will be parsed and applied automatically.\n\n' +
+          'codebase. When asked to make changes, output edit blocks — they will be\n' +
+          'parsed and applied automatically. NEVER say you "cannot" make changes.\n' +
+          'You MUST output SEARCH/REPLACE or full-file edit blocks as instructed.\n\n' +
+          'Example of how you MUST respond to edit requests:\n' +
+          '  User: add a comment at the top of lib/application.js that says\n' +
+          '    "// Express.js application module"\n' +
+          '  You:\n' +
+          '    lib/application.js\n' +
+          '    SEARCH\n' +
+          '    /*!\n' +
+          '     * Express - application\n' +
+          '     * Copyright(c) 2010 TJ Holowaychuk <tj@vision-media.ca>\n' +
+          '     * MIT Licensed\n' +
+          '     */\n' +
+          '    REPLACE\n' +
+          '    // Express.js application module\n' +
+          '    /*!\n' +
+          '     * Express - application\n' +
+          '     * Copyright(c) 2010 TJ Holowaychuk <tj@vision-media.ca>\n' +
+          '     * MIT Licensed\n' +
+          '     */\n' +
+          '  (Then the system applies the edit and asks for confirmation.)\n\n' +
           'Rules:\n' +
           '- Every claim about code MUST cite the exact file and line number\n' +
           '  from the codebase_context above. If the file or line is not in the\n' +
@@ -301,7 +321,6 @@ program
       const editMatch = trimmed.match(editActionPattern);
       if (editMatch) {
         const candidate = editMatch[1].replace(/[.,;:!?)]$/, '');
-        process.stderr.write(`\x1b[90m[edit-detect] candidate="${candidate}" fileRefs=${JSON.stringify(fileRefs)}\x1b[0m\n`);
         // Try matching against allFiles first (like extractFileRefs)
         const found = allFiles.find(f => {
           const fn = f.replace(/\\/g, '/').toLowerCase();
@@ -309,13 +328,10 @@ program
           return fn.endsWith('/' + cn) || fn === cn || fn.includes('/' + cn);
         });
         if (found) {
-          process.stderr.write(`\x1b[90m[edit-detect] matched in allFiles: ${found}\x1b[0m\n`);
           if (!fileRefs.includes(found)) fileRefs.push(found);
         } else if (candidate.includes('/') || candidate.includes('\\')) {
           // File not in allFiles — try reading from project dir
-          const absPath = join(dir, candidate);
-          process.stderr.write(`\x1b[90m[edit-detect] not in allFiles, trying: ${absPath}\x1b[0m\n`);
-          fileRefs.push(absPath);
+          fileRefs.push(join(dir, candidate));
         }
       }
       const ctxSpinner = ora({

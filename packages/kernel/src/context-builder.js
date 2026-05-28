@@ -112,7 +112,7 @@ function formatTrace(trace, bfsLogs, projectRoot) {
   return lines.join('\n');
 }
 
-function tryAdd(sections, seen, perFile, used, budget, maxPerFile, file, startLine, endLine, text, label, traceTarget) {
+function tryAdd(sections, seen, perFile, used, budget, maxPerFile, file, startLine, endLine, text, label, traceTarget, method = 'bfs') {
   const key = `${file}:${startLine}-${endLine}`;
   if (seen.has(key)) return false;
   const fileUsed = perFile.get(file) || 0;
@@ -130,7 +130,7 @@ function tryAdd(sections, seen, perFile, used, budget, maxPerFile, file, startLi
   used.value += block.length;
   if (traceTarget && traceTarget.length !== undefined) {
     const lbl = label || '';
-    traceTarget.push({ file, startLine, endLine, symbol: lbl.split('[').pop()?.replace(']', '')?.trim() || lbl, method: 'bfs' });
+    traceTarget.push({ file, startLine, endLine, symbol: lbl.split('[').pop()?.replace(']', '')?.trim() || lbl, method });
   }
   return true;
 }
@@ -145,8 +145,8 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
   const bfsLogs = [];
   const trace = [];
 
-  const tryAddSection = (file, startLine, endLine, text, label, traceEntry) => {
-    return tryAdd(sections, seen, perFile, used, budget, maxPerFile, file, startLine, endLine, text, label, traceEntry);
+  const tryAddSection = (file, startLine, endLine, text, label, traceEntry, method = 'bfs') => {
+    return tryAdd(sections, seen, perFile, used, budget, maxPerFile, file, startLine, endLine, text, label, traceEntry, method);
   };
 
   // Phase 0: Explicit file references
@@ -158,7 +158,7 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
       const maxLen = Math.max(Math.min(budget - used.value - 200, maxPerFile), 0);
       const isTruncated = content.length > maxLen;
       const fileText = isTruncated ? content.slice(0, maxLen) + '\n... (truncated)' : content;
-      tryAddSection(fp, 1, lineCount, fileText, `file-ref: ${fp}`, trace);
+      tryAddSection(fp, 1, lineCount, fileText, `file-ref: ${fp}`, trace, 'file-ref');
       bfsLogs.push(`  [file-ref] loaded ${fp} (${lineCount} lines)`);
     } catch {
       bfsLogs.push(`  [file-ref] failed to load ${fp}`);
