@@ -206,6 +206,7 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
   }
 
   // Phase 0.5: Extract specific functions mentioned in the question
+  const funcEntries = [];
   const funcNames = extractFunctionPatterns(question);
   if (funcNames.length > 0) {
     for (const fp of fileRefs) {
@@ -224,11 +225,10 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
         for (const m of matches.slice(0, 3)) {
           const funcText = content.slice(m.startLine - 1, m.endLine).join('\n').trim();
           if (funcText.length < 20) continue;
-          // Add surrounding context (5 lines before, 2 after)
           const ctxStart = Math.max(1, m.startLine - 5);
           const ctxEnd = Math.min(content.length, m.endLine + 2);
           const ctxText = content.slice(ctxStart - 1, ctxEnd).join('\n');
-          tryAddSection(fp, ctxStart, ctxEnd, ctxText, `function ${fn}`, trace, 'file-ref');
+          funcEntries.push({ fp, ctxStart, ctxEnd, ctxText, fn, matchLine: m.matchLine });
           bfsLogs.push(`  [func-ref] ${fp}:${m.startLine}–${m.endLine} "${m.matchLine}"`);
         }
       }
@@ -411,6 +411,12 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
         if (trace.length > 0) trace[trace.length - 1].method = 'rag';
       }
     }
+  }
+
+  // Phase 5: Func-ref sections last (closest to question, gets LLM attention)
+  for (const entry of funcEntries) {
+    if (used.value >= budget) break;
+    tryAddSection(entry.fp, entry.ctxStart, entry.ctxEnd, entry.ctxText, `function ${entry.fn}`, trace, 'file-ref');
   }
 
   return {

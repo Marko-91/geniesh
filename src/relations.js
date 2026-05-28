@@ -1,4 +1,4 @@
-import { readFile, access } from 'fs/promises';
+import { readFile, access, stat } from 'fs/promises';
 import { createReadStream, createWriteStream } from 'fs';
 import { chain } from 'stream-chain';
 import { parserStream } from 'stream-json';
@@ -37,26 +37,34 @@ async function _loadGraphJson(readable) {
   return CodeGraph.fromJSON(assembler.current);
 }
 
-export async function tryLoadGraph() {
+async function _tryJsonParse(file) {
+  // Skip readFile+JSON.parse for files >100MB to avoid RangeError
   try {
-    const content = await readFile(GRAPH_FILE, 'utf-8');
+    const s = await stat(file);
+    if (s.size > 100 * 1024 * 1024) return null;
+  } catch { return null; }
+  try {
+    const content = await readFile(file, 'utf-8');
     return CodeGraph.fromJSON(JSON.parse(content));
   } catch {
-    try {
-      return await _loadGraphJson(createReadStream(GRAPH_FILE));
-    } catch {
-      return null;
-    }
+    return null;
+  }
+}
+
+export async function tryLoadGraph() {
+  const graph = await _tryJsonParse(GRAPH_FILE);
+  if (graph) return graph;
+  try {
+    return await _loadGraphJson(createReadStream(GRAPH_FILE));
+  } catch {
+    return null;
   }
 }
 
 export async function loadGraph() {
-  try {
-    const content = await readFile(GRAPH_FILE, 'utf-8');
-    return CodeGraph.fromJSON(JSON.parse(content));
-  } catch {
-    return await _loadGraphJson(createReadStream(GRAPH_FILE));
-  }
+  const graph = await _tryJsonParse(GRAPH_FILE);
+  if (graph) return graph;
+  return await _loadGraphJson(createReadStream(GRAPH_FILE));
 }
 
 export async function graphExists() {
