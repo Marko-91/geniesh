@@ -457,6 +457,45 @@ program
             }
           }
 
+          // Fallback: if no edit block was found but the LLM showed a code block
+          // that looks like the target file content, propose it as a full-file edit
+          if (edits.length === 0 && editMatch) {
+            const targetFile = allFiles.find(f => {
+              const fn = f.replace(/\\/g, '/').toLowerCase();
+              const cn = editMatch[1].replace(/[.,;:!?)]$/, '').toLowerCase();
+              return fn.endsWith('/' + cn) || fn.includes('/' + cn);
+            });
+            if (targetFile) {
+              const codeBlocks = currentReply.match(/```[\w.]*\n[\s\S]*?```/g);
+              if (codeBlocks) {
+                const oldContent = await readFile(targetFile).catch(() => '');
+                for (const block of codeBlocks) {
+                  const newContent = block.replace(/```[\w.]*\n?/, '').replace(/\n```$/, '').trim();
+                  // Only propose if it's substantially different and contains the target file's first line
+                  const firstLine = oldContent.split('\n')[0]?.trim();
+                  if (firstLine && newContent.includes(firstLine) && newContent !== oldContent.trim()) {
+                    const diff = formatDiff(oldContent, newContent, targetFile);
+                    if (diff) {
+                      process.stdout.write(`\n${diff}\n`);
+                      const answer = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
+                      if (!answer || answer.toLowerCase() === 'y' || answer === '') {
+                        try {
+                          await applyFullFileEdit(targetFile, newContent);
+                          process.stdout.write(`\x1b[32m✓ ${targetFile} updated\x1b[0m\n`);
+                        } catch (err) {
+                          process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
+                        }
+                      } else {
+                        process.stdout.write(`\x1b[33mSkipped ${targetFile}\x1b[0m\n`);
+                      }
+                      break; // only propose the first matching block
+                    }
+                  }
+                }
+              }
+            }
+          }
+
           // Check for shell commands
           const commands = parseShellCommands(currentReply);
           for (const cmd of commands) {
