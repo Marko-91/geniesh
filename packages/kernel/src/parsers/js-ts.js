@@ -149,6 +149,41 @@ export function parseJSFile(content, filePath) {
             }
           }
         }
+
+        // Handle assignment expressions: app.handle = function handle() {}
+        if (kind === 'expression_statement') {
+          const assign = child.child(0);
+          if (assign && assign.kind() === 'assignment_expression') {
+            const left = assign.child(0);
+            const right = assign.child(2);
+            if (left && right && (right.kind() === 'function_expression' || right.kind() === 'arrow_function')) {
+              // Prefer the function's own name (identifier after `function` keyword)
+              let name = null;
+              for (const fc of right.children()) {
+                if (fc.kind() === 'identifier') { name = fc.text(); break; }
+              }
+              if (!name) {
+                // Fall back to the property name from the assignment target
+                if (left.kind() === 'member_expression') {
+                  for (const mc of left.children()) {
+                    if (mc.kind() === 'property_identifier') { name = mc.text(); break; }
+                  }
+                } else if (left.kind() === 'identifier') {
+                  name = left.text();
+                }
+              }
+              if (name) {
+                const range = right.range();
+                symbols.push({
+                  name, kind: 'function', exported: false,
+                  lineRange: [range.start.line + 1, range.end.line + 1],
+                });
+              }
+              // Recurse into function body for nested symbols
+              walkDecls(right);
+            }
+          }
+        }
       }
     }
     walkDecls(root);

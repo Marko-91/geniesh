@@ -28,8 +28,9 @@ export function parseSearchReplace(text, allFiles) {
   // old text
   // REPLACE
   // new text
+  // Markers may have leading/trailing whitespace
   const blocks = [];
-  const blockRe = /^([^\n]+)\nSEARCH\n([\s\S]*?)REPLACE\n([\s\S]*?)(?=\n\n\S|\nSEARCH|$)/gm;
+  const blockRe = /^([^\n]+)\n\s*SEARCH\s*\n([\s\S]*?)\n\s*REPLACE\s*\n([\s\S]*?)(?=\n\n\S|\n\s*SEARCH\s*\n|$(?!\n))/gm;
   let match;
   while ((match = blockRe.exec(text)) !== null) {
     const rawPath = match[1].trim();
@@ -62,13 +63,16 @@ export function parseFullFileEdits(text, allFiles) {
     if (file) edits.push({ file, content });
   }
 
-  // Pattern 2: code block with file path mentioned in preceding text
-  // e.g. "edit `lib/app.js`:\n```js\ncontent\n```"
+  // Pattern 2: "in file.js" or "edit file.js" followed by a code block
+  // Only match if the code block is substantial (>= 10 lines) to avoid
+  // treating inline snippets as full-file replacements
   const re2 = /(?:in|for|edit|update|change|modify)\s+[`'\"]?([^\s`'\"]+(?:\.[a-z]+)+)[`'\"]?[^]*?\n```(?:\w+)?\n([\s\S]*?)```/gi;
   while ((match = re2.exec(text)) !== null) {
     const rawPath = match[1].trim();
     const content = match[2];
     if (!rawPath || !content || seen.has(rawPath)) continue;
+    const lines = content.split('\n');
+    if (lines.length < 10) continue; // too small to be a full file
     seen.add(rawPath);
     const file = findFile(rawPath, allFiles);
     if (file) edits.push({ file, content });
@@ -131,7 +135,8 @@ export async function applySearchReplace(file, search, replace) {
   if (!content.includes(search)) {
     throw new Error(`Search text not found in ${file}`);
   }
-  const newContent = content.replace(search, replace);
+  // Use function replacer to avoid $&, $`, $' interpretation
+  const newContent = content.replace(search, () => replace);
   await writeFile(file, newContent, 'utf-8');
   return content;
 }

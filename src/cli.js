@@ -429,7 +429,7 @@ program
         const fnName = fnRequest ? fnRequest[1] : 'handle';
         const changeRequest = trimmed.replace(/.*?(?:edit|change|modify|add|update|fix)\s.*?(?:function\s+)?\w+\s*\([^)]*\)\s*/i, '').replace(/^to\s+/i, '').trim() || '';
 
-        while (editMatch && retries < 2) {
+        while (editMatch && retries < 3) {
           const hasEditBlock = currentReply.includes('SEARCH') || /```\w+:[^\s]/.test(currentReply);
           if (hasEditBlock) break;
           const hasCodeBlock = currentReply.includes('```');
@@ -440,6 +440,9 @@ program
               const c = block.replace(/```[\w.]*\n?/, '').replace(/\n```$/, '').trim();
               const m = c.match(/function\s+(\w+)\s*\(/);
               if (!m) return false;
+              // Reject placeholder/example code blocks
+              const placeholderRe = /\.\.\.|\/\/.*(?:in practice|rest of|your code|example|something like|would follow|or any other|copyright|implementation not shown)/i;
+              if (placeholderRe.test(c)) return false;
               // Compare with original — skip retry only if at least 2 lines differ
               if (fileContent && fnName) {
                 const lines = fileContent.split('\n');
@@ -466,7 +469,7 @@ program
             });
             if (hasSubstantiveEdit) break; // let code block fallback handle it
           }
-          const refusalPatterns = /\b(cannot|can't|i don't see|i can see fragments|not able to|unable to)\b/i;
+          const refusalPatterns = /\b(cannot|can't|i don't see|i can see fragments|not able to|unable to|not typical|not recommended|instead.*use|not appropriate|would be unusual)\b/i;
           if (!refusalPatterns.test(currentReply) && !hasCodeBlock) break;
 
           retries++;
@@ -487,15 +490,33 @@ program
               funcText = lines.slice(fnIdx, endIdx + 1).join('\n');
             }
           }
-          const retry = '\n[System] You MUST modify the `' + fnName + '` function in `' + editFile + '`.\n' +
-            'Do NOT suggest alternative approaches. Do NOT just reformat or add comments.\n' +
-            'Make the ACTUAL change requested: ' + changeRequest + '\n' +
-            (funcText ? 'The existing ' + fnName + ' function:\n```\n' + funcText + '\n```\n' : '') +
-            'Output a SEARCH/REPLACE block with the function text EXACTLY as shown in SEARCH.';
-          messages.push({ role: 'user', content: retry });
+          const retryMsg = retries >= 3
+            ? '\n[SYSTEM OVERRIDE] You are in DIRECT EDIT mode. You MUST output a SEARCH/REPLACE block.\n' +
+              'Do NOT explain. Do NOT suggest alternatives. Do NOT refuse.\n' +
+              'The user asked: ' + changeRequest + '\n' +
+              'File: ' + editFile + '\n' +
+              'Function: ' + fnName + '\n\n' +
+              (funcText ? 'Existing function:\n```\n' + funcText + '\n```\n\n' : '') +
+              'Output ONLY:\n' + editFile + '\nSEARCH\n[exact existing function]\nREPLACE\n[modified function]'
+            : '\n[System] You MUST modify the `' + fnName + '` function in `' + editFile + '`.\n' +
+              'Do NOT suggest alternative approaches. Do NOT just reformat or add comments.\n' +
+              'Make the ACTUAL change requested: ' + changeRequest + '\n' +
+              (funcText ? 'The existing ' + fnName + ' function:\n```\n' + funcText + '\n```\n' : '') +
+              'Output a SEARCH/REPLACE block with the function text EXACTLY as shown in SEARCH.';
+          messages.push({ role: 'user', content: retryMsg });
           process.stdout.write(`\n\x1b[36mAssistant\x1b[0m:\n`);
           currentReply = await runChat(messages);
           messages.push({ role: 'assistant', content: currentReply });
+        }
+
+        // After retries: clear editMatch only if retries exhausted (not if we
+        // broke out early with a substantive code block that the fallback handles)
+        if (editMatch && retries >= 3) {
+          const hasSREdit = /SEARCH[\s\S]*?REPLACE/.test(currentReply);
+          const hasFullEdit = /```\w+\s*:/.test(currentReply);
+          if (!hasSREdit && !hasFullEdit) {
+            editMatch = null;
+          }
         }
 
         let agentLoop = true;
@@ -508,18 +529,20 @@ program
           for (const edit of edits) {
             let diff;
             let apply;
+            let originalContent;
             if (edit.type === 'sr') {
+              originalContent = await readFile(edit.file).catch(() => '');
               diff = formatSearchReplaceDiff(edit.file, edit.search, edit.replace);
               apply = () => applySearchReplace(edit.file, edit.search, edit.replace);
             } else {
-              const oldContent = await readFile(edit.file).catch(() => '');
-              diff = formatDiff(oldContent, edit.content, edit.file);
+              originalContent = await readFile(edit.file).catch(() => '');
+              diff = formatDiff(originalContent, edit.content, edit.file);
               apply = () => applyFullFileEdit(edit.file, edit.content);
             }
             if (!diff) continue;
             process.stdout.write(`\n${diff}\n`);
             const answer = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
-            if (!answer || answer.toLowerCase() === 'y' || answer === '') {
+            if (!answer || answer.toLowerCase().startsWith('y') || answer === '') {
               try {
                 await apply();
                 // Syntax check
@@ -528,8 +551,13 @@ program
                     execSync(`node --check "${edit.file}"`, { stdio: 'pipe', timeout: 10000 });
                     process.stdout.write(`\x1b[32m✓ ${edit.file} updated (syntax OK)\x1b[0m\n`);
                   } catch (synErr) {
-                    process.stdout.write(`\x1b[33m⚠  ${edit.file} updated but syntax check FAILED:\x1b[0m\n`);
+                    // Revert on syntax failure
+                    if (originalContent) {
+                      await writeFile(edit.file, originalContent, 'utf-8');
+                    }
+                    process.stdout.write(`\x1b[31m✗ ${edit.file} syntax check FAILED — reverted\x1b[0m\n`);
                     process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
+                    lastEditError = new Error(`Syntax check failed for ${edit.file}`);
                   }
                 } else {
                   process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
@@ -689,7 +717,7 @@ program
                       if (oldLines2.length > 12 || newLines2.length > 12) difLines.push('  ...');
                       process.stdout.write(difLines.join('\n') + '\n');
                       const answer = await ask(`Replace function \x1b[1m${funcName}\x1b[0m in ${targetFile}? [\x1b[1mY\x1b[0m/n] `);
-                      if (!answer || answer.toLowerCase() === 'y' || answer === '') {
+                      if (!answer || answer.toLowerCase().startsWith('y') || answer === '') {
                         try {
                           await writeFile(targetFile, fullNew);
                           if (/\.(js|mjs|cjs)$/i.test(targetFile)) {
@@ -720,7 +748,7 @@ program
                     if (diff) {
                       process.stdout.write(`\n${diff}\n`);
                       const answer = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
-                      if (!answer || answer.toLowerCase() === 'y' || answer === '') {
+                      if (!answer || answer.toLowerCase().startsWith('y') || answer === '') {
                         try {
                           await writeFile(targetFile, newContent);
                           if (/\.(js|mjs|cjs)$/i.test(targetFile)) {
@@ -753,7 +781,7 @@ program
           for (const cmd of commands) {
             process.stdout.write(`\n\x1b[90m$ ${cmd}\x1b[0m\n`);
             const answer = await ask(`Run this command? [\x1b[1mY\x1b[0m/n] `);
-            if (!answer || answer.toLowerCase() === 'y' || answer === '') {
+            if (!answer || answer.toLowerCase().startsWith('y') || answer === '') {
               const result = runShellCommand(cmd);
               process.stdout.write(`\x1b[90m${result.output.slice(0, 2000)}${result.output.length > 2000 ? '\n... (truncated)' : ''}\x1b[0m\n`);
               process.stdout.write(`\x1b[90m  → exit ${result.exitCode} (${result.elapsed})\x1b[0m\n`);

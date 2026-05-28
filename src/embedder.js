@@ -29,27 +29,39 @@ export async function embedBatch(texts) {
     t.length > EMBED_CHAR_LIMIT ? t.slice(0, EMBED_CHAR_LIMIT) : t,
   );
 
-  let res;
-  try {
-    res = await fetch(`${OLLAMA_URL}/api/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: _embedder, input }),
-    });
-  } catch (err) {
-    throw new Error(
-      `Cannot connect to Ollama at ${OLLAMA_URL}. Is Ollama running?\n  ${err.message}`,
-    );
+  // Cap batch size to avoid Ollama hanging on large files
+  const MAX_BATCH = 50;
+  const batches = [];
+  for (let i = 0; i < input.length; i += MAX_BATCH) {
+    batches.push(input.slice(i, i + MAX_BATCH));
   }
 
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Ollama embed error ${res.status}: ${body}`);
-  }
+  const allEmbeddings = [];
+  for (const batch of batches) {
+    let res;
+    try {
+      res = await fetch(`${OLLAMA_URL}/api/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: _embedder, input: batch }),
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch (err) {
+      throw new Error(
+        `Cannot connect to Ollama at ${OLLAMA_URL}. Is Ollama running?\n  ${err.message}`,
+      );
+    }
 
-  const data = await res.json();
-  if (!data?.embeddings?.length) {
-    throw new Error('Ollama returned empty embedding response');
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Ollama embed error ${res.status}: ${body}`);
+    }
+
+    const data = await res.json();
+    if (!data?.embeddings?.length) {
+      throw new Error('Ollama returned empty embedding response');
+    }
+    allEmbeddings.push(...data.embeddings);
   }
-  return data.embeddings;
+  return allEmbeddings;
 }

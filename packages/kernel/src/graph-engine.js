@@ -518,6 +518,10 @@ export async function buildGraph(dir, files, prevGraph = null, onProgress = null
       let targets = graph.getSymbol(ref.name)
         .filter(s => s.file !== file || s.lineRange[0] !== ref.lineRange[0]);
 
+      if (targets.length > 20) {
+        targets = targets.slice(0, 20);
+      }
+
       if (targets.length === 0) {
         const binding = importBindings.find(b => b.localName === ref.name && b.importedName !== '*' && b.importedName !== 'default');
         if (binding) {
@@ -527,6 +531,9 @@ export async function buildGraph(dir, files, prevGraph = null, onProgress = null
             if (resolvedFile) {
               targets = graph.getSymbol(binding.importedName)
                 .filter(s => s.file === resolvedFile);
+              if (targets.length > 20) {
+                targets = targets.slice(0, 20);
+              }
             }
           }
         }

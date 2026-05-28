@@ -47,19 +47,62 @@ const ENGLISH_PASCAL_NOISE = new Set([
 const KIND_ORDER = { class: 0, function: 1, variable: 2, reference: 3 };
 
 const _fileCache = new Map();
+const FILE_CACHE_MAX = 50;
+const FILE_CACHE_MAX_BYTES = 5 * 1024 * 1024; // 5MB total
+let _fileCacheBytes = 0;
+const MAX_SYMBOL_NODES = 20;
+const MAX_SEED_HITS = 50;
+
+function extractLines(content, startLine, endLine) {
+  let lineStart = 0;
+  let currentLine = 1;
+  let resultStart = -1;
+  let resultEnd = -1;
+  for (let i = 0; i <= content.length; i++) {
+    if (i === content.length || content[i] === '\n') {
+      if (currentLine === startLine) resultStart = lineStart;
+      if (currentLine === endLine) { resultEnd = i; break; }
+      if (currentLine > endLine) break;
+      lineStart = i + 1;
+      currentLine++;
+    }
+  }
+  if (resultStart >= 0 && resultEnd < 0) resultEnd = content.length;
+  return resultStart >= 0 ? content.slice(resultStart, resultEnd) : '';
+}
 
 async function readFileLines(file, startLine, endLine) {
   try {
-    let lines = _fileCache.get(file);
-    if (!lines) {
-      const content = await readFile(file);
-      lines = content.split('\n');
-      _fileCache.set(file, lines);
+    const cached = _fileCache.get(file);
+    if (cached) {
+      return cached.slice(startLine - 1, endLine).join('\n');
     }
+    const content = await readFile(file);
+    // Skip caching for files > 500KB to avoid OOM from large file reads
+    if (content.length > 500 * 1024) {
+      return extractLines(content, startLine, endLine);
+    }
+    const lines = content.split('\n');
+    // Evict oldest entries if adding this would exceed limit
+    const estimated = estimateBytes(lines);
+    while (_fileCacheBytes + estimated > FILE_CACHE_MAX_BYTES && _fileCache.size > 0) {
+      const firstKey = _fileCache.keys().next().value;
+      const removed = _fileCache.get(firstKey);
+      _fileCacheBytes -= estimateBytes(removed);
+      _fileCache.delete(firstKey);
+    }
+    _fileCacheBytes += estimated;
+    _fileCache.set(file, lines);
     return lines.slice(startLine - 1, endLine).join('\n');
   } catch {
     return null;
   }
+}
+
+function estimateBytes(lines) {
+  let size = 0;
+  for (const l of lines) size += l.length;
+  return size;
 }
 
 function extractQueryTerms(question) {
@@ -240,7 +283,10 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
   seedSymbols = seedSymbols.filter(s => !ENGLISH_PASCAL_NOISE.has(s.toLowerCase()));
 
   if (graph && seedSymbols.length > 0) {
-    seedSymbols = seedSymbols.filter(s => graph.getSymbol(s).length > 0);
+    seedSymbols = seedSymbols.filter(s => {
+      const nodes = graph.getSymbol(s);
+      return nodes.length > 0 && nodes.length <= MAX_SEED_HITS;
+    });
   }
 
   // Run RAG search for discovery fill
@@ -287,8 +333,9 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
       seenSymbols.add(symName);
 
       const symNodes = graph ? graph.getSymbol(symName) : [];
+      const cappedNodes = symNodes.slice(0, MAX_SYMBOL_NODES);
 
-      for (const symNode of symNodes) {
+      for (const symNode of cappedNodes) {
         if (used.value >= budget) break;
 
         // Get definition code
