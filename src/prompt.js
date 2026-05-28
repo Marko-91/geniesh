@@ -19,6 +19,22 @@ Rules:
 - Sections labeled "file-ref:" contain the ENTIRE file content.
 - When asked to make changes, output SEARCH/REPLACE blocks. They will be
   applied automatically. Never say you cannot modify files.
+  Example SEARCH/REPLACE block:
+  lib/application.js
+  SEARCH
+  app.handle = function handle(req, res, callback) {
+    var done = callback || finalhandler(req, res, {});
+    return this.router.handle(req, res, done);
+  };
+  REPLACE
+  app.handle = function handle(req, res, callback) {
+    var done = callback || finalhandler(req, res, {});
+    res.setHeader('Cache-Control', 'no-cache');
+    return this.router.handle(req, res, done);
+  };
+  The SEARCH text must match the EXISTING file content exactly so the system
+  can find and replace it. The REPLACE text is your modified version.
+  Always output a SEARCH/REPLACE block — never just describe the change.
 `;
 
 

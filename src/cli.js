@@ -5,6 +5,7 @@ import { createInterface } from 'readline';
 import { basename, join } from 'path';
 import { createRequire } from 'module';
 import { readFile } from './fs-utils.js';
+import { writeFile } from 'fs/promises';
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 import { extractFunction } from './extractor.js';
@@ -315,12 +316,29 @@ program
       const symbols = extractSymbols(trimmed);
       let fileRefs = extractFileRefs(trimmed, allFiles);
 
-      // Auto-detect edit intent: scan the question for "edit <filepath>" patterns
-      // and try to read the file directly from disk
-      const editActionPattern = /(?:edit|change|modify|add|update|fix|remove|delete|append|prepend|insert)\s.*?([^\s,;]+\.\w+)/i;
-      const editMatch = trimmed.match(editActionPattern);
+      // Auto-detect edit intent: find <file.ext> near an edit verb in the question
+      const hasEditVerb = /\b(?:edit|change|modify|add|update|fix|remove|delete|append|prepend|insert)\b/i.test(trimmed);
+      let editMatch = null;
+      if (hasEditVerb) {
+        // Pattern 1: "edit <anything> file.ext"
+        let m = trimmed.match(/(?:edit|change|modify|add|update|fix|remove|delete|append|prepend|insert)\s.*?([^\s,;]+\.\w+)/i);
+        if (m) { editMatch = m; }
+        // Pattern 2: "in file.ext edit" — match file BEFORE the verb
+        if (!editMatch) {
+          m = trimmed.match(/(?:in|of|for|from)\s+([^\s,;]+\.\w+)\b/i);
+          if (m) { editMatch = m; }
+        }
+        // Pattern 3: fall back to fileRefs if we found a .js/.ts file
+        if (!editMatch) {
+          const ref = fileRefs.find(f => /\.(js|ts|jsx|tsx|mjs|cjs)$/i.test(f));
+          if (ref) {
+            const cn = ref.replace(/\\/g, '/').split('/').slice(-1)[0].toLowerCase();
+            editMatch = { 1: cn };
+          }
+        }
+      }
       if (editMatch) {
-        const candidate = editMatch[1].replace(/[.,;:!?)]$/, '');
+        const candidate = (editMatch[1] || editMatch[2] || '').replace(/[.,;:!?)]$/, '');
         // Try matching against allFiles first (like extractFileRefs)
         const found = allFiles.find(f => {
           const fn = f.replace(/\\/g, '/').toLowerCase();
@@ -402,23 +420,52 @@ program
         while (editMatch && retries < 2) {
           const hasEditBlock = currentReply.includes('SEARCH') || /```\w+:[^\s]/.test(currentReply);
           if (hasEditBlock) break;
+          const hasCodeBlock = currentReply.includes('```');
+          if (hasCodeBlock) {
+            // Only skip retry if a code block IS a function edit (matches func regex)
+            const codeBlocks = currentReply.match(/```[\w.]*\n[\s\S]*?```/g);
+            const hasFuncEdit = codeBlocks?.some(block => {
+              const c = block.replace(/```[\w.]*\n?/, '').replace(/\n```$/, '').trim();
+              return /function\s+\w+\s*\(/.test(c);
+            });
+            if (hasFuncEdit) break; // let code block fallback handle it
+          }
           const refusalPatterns = /\b(cannot|can't|i don't see|i can see fragments|not able to|unable to)\b/i;
-          if (!refusalPatterns.test(currentReply)) break;
+          if (!refusalPatterns.test(currentReply) && !hasCodeBlock) break;
 
-          // Read the target file to give the LLM exact text to match in SEARCH
+          retries++;
+          // Read the target file and find the target function to give precise instructions
           const editFile = editMatch[1].replace(/[.,;:!?)]$/, '');
           const absFile = allFiles.find(f => {
             const fn = f.replace(/\\/g, '/').toLowerCase();
             return fn.endsWith('/' + editFile.toLowerCase()) || fn.includes('/' + editFile.toLowerCase());
           });
-          let filePreview = '';
-          if (absFile) {
-            try { filePreview = (await readFile(absFile)).split('\n').slice(0, 20).join('\n'); } catch {}
+          const fileContent = absFile ? await readFile(absFile).catch(() => '') : '';
+          // Extract function name from the user's question
+          const fnRequest = trimmed.match(/(?:function\s+)?(\w+)\s*\([^)]*\)/);
+          const fnName = fnRequest ? fnRequest[1] : 'handle';
+          // Find the target function in the file and include it in the prompt
+          let funcText = '';
+          if (fnName && fileContent) {
+            const lines = fileContent.split('\n');
+            const fnIdx = lines.findIndex(l => new RegExp(`function\\s+${fnName}\\s*\\(`).test(l));
+            if (fnIdx >= 0) {
+              let depth = 0, endIdx = fnIdx, started = false;
+              for (let i = fnIdx; i < lines.length && i < fnIdx + 300; i++) {
+                for (const ch of lines[i]) {
+                  if (ch === '{') { depth++; started = true; }
+                  if (ch === '}') depth--;
+                }
+                if (started && depth <= 0 && i > fnIdx) { endIdx = i; break; }
+              }
+              funcText = lines.slice(fnIdx, endIdx + 1).join('\n');
+            }
           }
-
-          retries++;
-          const retry = '\n[System] Output ONLY a SEARCH/REPLACE block. Do NOT describe the change — just the block.' +
-            (filePreview ? '\nThe first 20 lines of the file are:\n```\n' + filePreview + '\n```\nUse SEARCH to match the EXACT text above, and REPLACE with it preceded by "// Express.js application module\n".' : '\nRead the file-ref section and copy the exact text for SEARCH.');
+          const retry = '\n[System] You MUST modify the `' + fnName + '` function in `' + editFile + '`.\n' +
+            'Do NOT suggest alternative approaches (middleware, routes, etc.).\n' +
+            'Edit the ' + fnName + ' function directly. Output a SEARCH/REPLACE block.\n' +
+            (funcText ? 'The existing ' + fnName + ' function is:\n```\n' + funcText + '\n```\n' : '') +
+            (fileContent && !funcText ? '\nFile ' + editFile + ':\n```\n' + fileContent.slice(0, 2500) + '\n```' : '');
           messages.push({ role: 'user', content: retry });
           process.stdout.write(`\n\x1b[36mAssistant\x1b[0m:\n`);
           currentReply = await runChat(messages);
@@ -431,6 +478,7 @@ program
 
           // Check for file edits
           const edits = parseFileEdits(currentReply, allFiles);
+          let lastEditError = null;
           for (const edit of edits) {
             let diff;
             let apply;
@@ -448,17 +496,96 @@ program
             if (!answer || answer.toLowerCase() === 'y' || answer === '') {
               try {
                 await apply();
-                process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
+                // Syntax check
+                if (/\.(js|mjs|cjs)$/i.test(edit.file)) {
+                  try {
+                    execSync(`node --check "${edit.file}"`, { stdio: 'pipe', timeout: 10000 });
+                    process.stdout.write(`\x1b[32m✓ ${edit.file} updated (syntax OK)\x1b[0m\n`);
+                  } catch (synErr) {
+                    process.stdout.write(`\x1b[33m⚠  ${edit.file} updated but syntax check FAILED:\x1b[0m\n`);
+                    process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
+                  }
+                } else {
+                  process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
+                }
               } catch (err) {
                 process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
+                lastEditError = err;
               }
             } else {
               process.stdout.write(`\x1b[33mSkipped ${edit.file}\x1b[0m\n`);
             }
           }
 
+          // If SEARCH text wasn't found, try function-level fallback
+          if (lastEditError && lastEditError.message.includes('not found')) {
+            const srEdit = edits.find(e => e.type === 'sr');
+            if (srEdit) {
+              const oldContent = await readFile(srEdit.file).catch(() => '');
+              if (oldContent) {
+                // Extract function name from the SEARCH or REPLACE text
+                const funcMatch = (srEdit.search + srEdit.replace).match(/function\s+(\w+)\s*\(/);
+                if (funcMatch) {
+                  const funcName = funcMatch[1];
+                  const oldLines = oldContent.split('\n');
+                  const funcRegex = new RegExp(`function\\s+${funcName}\\s*\\([^)]*\\)`);
+                  let startIdx = oldLines.findIndex(l => funcRegex.test(l));
+                  if (startIdx >= 0) {
+                    let depth = 0, endIdx = startIdx, started = false;
+                    for (let i = startIdx; i < oldLines.length && i < startIdx + 300; i++) {
+                      for (const ch of oldLines[i]) {
+                        if (ch === '{') { depth++; started = true; }
+                        if (ch === '}') depth--;
+                      }
+                      if (started && depth <= 0 && i > startIdx) { endIdx = i; break; }
+                    }
+                    if (endIdx <= startIdx) endIdx = Math.min(startIdx + srEdit.replace.split('\n').length, oldLines.length);
+                    const oldFunc = oldLines.slice(startIdx, endIdx + 1).join('\n');
+                    const newHead = oldLines.slice(0, startIdx).join('\n');
+                    const newTail = oldLines.slice(endIdx + 1).join('\n');
+                    const fullNew = (newHead ? newHead + '\n' : '') + srEdit.replace + (newTail ? '\n' + newTail : '');
+                    process.stdout.write(`\n\x1b[33mSEARCH text not found — retrying by function \x1b[1m${funcName}\x1b[0m:\x1b[0m\n`);
+                    // Show brief diff
+                    const oLines = oldFunc.split('\n');
+                    const rLines = srEdit.replace.split('\n');
+                    const max = Math.min(oLines.length, rLines.length, 8);
+                    for (let i = 0; i < max; i++) {
+                      if (oLines[i] !== rLines[i]) {
+                        process.stdout.write(`\x1b[31m- ${oLines[i]}\x1b[0m\n`);
+                        process.stdout.write(`\x1b[32m+ ${rLines[i]}\x1b[0m\n`);
+                      } else {
+                        process.stdout.write(`  ${oLines[i]}\n`);
+                      }
+                    }
+                    const answer2 = await ask(`Replace function \x1b[1m${funcName}\x1b[0m in ${srEdit.file}? [\x1b[1mY\x1b[0m/n] `);
+                    if (!answer2 || answer2.toLowerCase() === 'y' || answer2 === '') {
+                      try {
+                        await writeFile(srEdit.file, fullNew);
+                        if (/\.(js|mjs|cjs)$/i.test(srEdit.file)) {
+                          try {
+                            execSync(`node --check "${srEdit.file}"`, { stdio: 'pipe', timeout: 10000 });
+                            process.stdout.write(`\x1b[32m✓ ${srEdit.file} updated (syntax OK)\x1b[0m\n`);
+                          } catch (synErr) {
+                            process.stdout.write(`\x1b[33m⚠  Updated but syntax check FAILED:\x1b[0m\n`);
+                            process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
+                          }
+                        } else {
+                          process.stdout.write(`\x1b[32m✓ ${srEdit.file} updated\x1b[0m\n`);
+                        }
+                      } catch (err2) {
+                        process.stdout.write(`\x1b[31m✗ Failed: ${err2.message}\x1b[0m\n`);
+                      }
+                    } else {
+                      process.stdout.write(`\x1b[33mSkipped\x1b[0m\n`);
+                    }
+                  }
+                }
+              }
+            }
+          }
+
           // Fallback: if no edit block was found but the LLM showed a code block
-          // that looks like the target file content, propose it as a full-file edit
+          // that looks like a function edit, parse and apply it
           if (edits.length === 0 && editMatch) {
             const targetFile = allFiles.find(f => {
               const fn = f.replace(/\\/g, '/').toLowerCase();
@@ -469,9 +596,90 @@ program
               const codeBlocks = currentReply.match(/```[\w.]*\n[\s\S]*?```/g);
               if (codeBlocks) {
                 const oldContent = await readFile(targetFile).catch(() => '');
+                if (!oldContent) break;
                 for (const block of codeBlocks) {
                   const newContent = block.replace(/```[\w.]*\n?/, '').replace(/\n```$/, '').trim();
-                  // Only propose if it's substantially different and contains the target file's first line
+                  const oldLines = oldContent.split('\n');
+
+                  // Pattern A: Function edit — code block looks like a function/method def
+                  const funcMatch = newContent.match(/(?:(\w+(?:\.\w+)*)\s*(?:\.\s*prototype\s*\.\s*)?=\s*)?function\s+(\w+)\s*\(([^)]*)\)/);
+                  if (funcMatch) {
+                    const funcName = funcMatch[2];
+                    const funcArgs = funcMatch[3];
+                    // Search the file for this function definition using regex
+                    const funcRegex = new RegExp(
+                      `function\\s+${funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\([^)]*\\)`,
+                      'i'
+                    );
+                    let startIdx = oldLines.findIndex(l => funcRegex.test(l));
+                    if (startIdx === -1) {
+                      // Try without args — match just the function name
+                      const simpleRegex = new RegExp(
+                        `[=\\s]function\\s+${funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`,
+                        'i'
+                      );
+                      startIdx = oldLines.findIndex(l => simpleRegex.test(l));
+                    }
+                    if (startIdx >= 0) {
+                      // Find end of old function by brace matching
+                      let depth = 0;
+                      let endIdx = startIdx;
+                      let started = false;
+                      for (let i = startIdx; i < oldLines.length && i < startIdx + 300; i++) {
+                        for (const ch of oldLines[i]) {
+                          if (ch === '{') { depth++; started = true; }
+                          if (ch === '}') depth--;
+                        }
+                        if (started && depth <= 0 && i > startIdx) { endIdx = i; break; }
+                      }
+                      if (endIdx <= startIdx) endIdx = Math.min(startIdx + newContent.split('\n').length, oldLines.length);
+                      const oldFunc = oldLines.slice(startIdx, endIdx + 1).join('\n');
+                      const newHead = oldLines.slice(0, startIdx).join('\n');
+                      const newTail = oldLines.slice(endIdx + 1).join('\n');
+                      const fullNew = (newHead ? newHead + '\n' : '') + newContent + (newTail ? '\n' + newTail : '');
+                      process.stdout.write(`\n\x1b[33mProposed function edit:\x1b[0m\n`);
+                      process.stdout.write(`\x1b[35m--- ${targetFile}:${startIdx + 1}\x1b[0m\n`);
+                      process.stdout.write(`\x1b[36m+++ (proposed)\x1b[0m\n`);
+                      const difLines = [];
+                      const oldLines2 = oldFunc.split('\n');
+                      const newLines2 = newContent.split('\n');
+                      const maxLines = Math.max(oldLines2.length, newLines2.length);
+                      for (let i = 0; i < maxLines && i < 12; i++) {
+                        if (i < oldLines2.length && i < newLines2.length && oldLines2[i] === newLines2[i]) {
+                          difLines.push(` ${oldLines2[i]}`);
+                        } else {
+                          if (i < oldLines2.length) difLines.push(`\x1b[31m-${oldLines2[i]}\x1b[0m`);
+                          if (i < newLines2.length) difLines.push(`\x1b[32m+${newLines2[i]}\x1b[0m`);
+                        }
+                      }
+                      if (oldLines2.length > 12 || newLines2.length > 12) difLines.push('  ...');
+                      process.stdout.write(difLines.join('\n') + '\n');
+                      const answer = await ask(`Replace function \x1b[1m${funcName}\x1b[0m in ${targetFile}? [\x1b[1mY\x1b[0m/n] `);
+                      if (!answer || answer.toLowerCase() === 'y' || answer === '') {
+                        try {
+                          await writeFile(targetFile, fullNew);
+                          if (/\.(js|mjs|cjs)$/i.test(targetFile)) {
+                            try {
+                              execSync(`node --check "${targetFile}"`, { stdio: 'pipe', timeout: 10000 });
+                              process.stdout.write(`\x1b[32m✓ ${targetFile} updated (syntax OK)\x1b[0m\n`);
+                            } catch (synErr) {
+                              process.stdout.write(`\x1b[31m✗ Syntax error in result:\x1b[0m\n`);
+                              process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
+                            }
+                          } else {
+                            process.stdout.write(`\x1b[32m✓ ${targetFile} updated\x1b[0m\n`);
+                          }
+                        } catch (err) {
+                          process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
+                        }
+                      } else {
+                        process.stdout.write(`\x1b[33mSkipped\x1b[0m\n`);
+                      }
+                    }
+                    break;
+                  }
+
+                  // Pattern B: Full file edit — code block contains the file's first line
                   const firstLine = oldContent.split('\n')[0]?.trim();
                   if (firstLine && newContent.includes(firstLine) && newContent !== oldContent.trim()) {
                     const diff = formatDiff(oldContent, newContent, targetFile);
@@ -480,15 +688,25 @@ program
                       const answer = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
                       if (!answer || answer.toLowerCase() === 'y' || answer === '') {
                         try {
-                          await applyFullFileEdit(targetFile, newContent);
-                          process.stdout.write(`\x1b[32m✓ ${targetFile} updated\x1b[0m\n`);
+                          await writeFile(targetFile, newContent);
+                          if (/\.(js|mjs|cjs)$/i.test(targetFile)) {
+                            try {
+                              execSync(`node --check "${targetFile}"`, { stdio: 'pipe', timeout: 10000 });
+                              process.stdout.write(`\x1b[32m✓ ${targetFile} updated (syntax OK)\x1b[0m\n`);
+                            } catch (synErr) {
+                              process.stdout.write(`\x1b[31m✗ Syntax error in result:\x1b[0m\n`);
+                              process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
+                            }
+                          } else {
+                            process.stdout.write(`\x1b[32m✓ ${targetFile} updated\x1b[0m\n`);
+                          }
                         } catch (err) {
                           process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
                         }
                       } else {
                         process.stdout.write(`\x1b[33mSkipped ${targetFile}\x1b[0m\n`);
                       }
-                      break; // only propose the first matching block
+                      break;
                     }
                   }
                 }

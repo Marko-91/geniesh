@@ -24,6 +24,8 @@ export class CodeGraph {
     this.fileHashes = new Map();
     this.communityIds = new Map();
     this.communityCount = 0;
+    this._fileSymbols = new Map();
+    this._symByName = new Map();
   }
 
   addNode(id, data) {
@@ -35,7 +37,14 @@ export class CodeGraph {
       if (data.exported && !existing.exported) existing.exported = true;
       return;
     }
-    this.nodes.set(id, { ...data, id });
+    const node = { ...data, id };
+    this.nodes.set(id, node);
+    if (data.type === 'symbol' && data.name && data.file) {
+      const list = this._fileSymbols.get(node.file);
+      if (list) list.push(node); else this._fileSymbols.set(node.file, [node]);
+      const byName = this._symByName.get(node.name);
+      if (byName) byName.push(node); else this._symByName.set(node.name, [node]);
+    }
   }
 
   addFileNode(file) {
@@ -97,24 +106,11 @@ export class CodeGraph {
   }
 
   getFileSymbols(file) {
-    const fileId = nodeId(file);
-    const symbols = [];
-    for (const [id, node] of this.nodes) {
-      if (node.type === 'symbol' && node.file === file) {
-        symbols.push(node);
-      }
-    }
-    return symbols;
+    return this._fileSymbols.get(file) || [];
   }
 
   getSymbol(name) {
-    const results = [];
-    for (const [id, node] of this.nodes) {
-      if (node.type === 'symbol' && node.name === name) {
-        results.push(node);
-      }
-    }
-    return results;
+    return this._symByName.get(name) || [];
   }
 
   getFileImports(file) {
@@ -272,6 +268,17 @@ export class CodeGraph {
         Object.entries(json.fileHashes || {}).map(([k, v]) => [k.replace(/\\/g, '/'), v])
       );
       graph.communityCount = json.communityCount || 0;
+    }
+    // Rebuild file/symbol indexes for O(1) lookups
+    for (const node of graph.nodes.values()) {
+      if (node.type === 'symbol' && node.name && node.file) {
+        let list = graph._fileSymbols.get(node.file);
+        if (!list) { list = []; graph._fileSymbols.set(node.file, list); }
+        list.push(node);
+        let byName = graph._symByName.get(node.name);
+        if (!byName) { byName = []; graph._symByName.set(node.name, byName); }
+        byName.push(node);
+      }
     }
     return graph;
   }
