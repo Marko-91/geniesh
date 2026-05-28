@@ -417,34 +417,60 @@ program
 
         // Auto-retry if the LLM refused to edit but was asked to make a change
         let retries = 0;
+        // Resolve target file once for both retry logic and code block comparison
+        const editFile = editMatch ? editMatch[1].replace(/[.,;:!?)]$/, '') : '';
+        const absFile = editMatch ? allFiles.find(f => {
+          const fn = f.replace(/\\/g, '/').toLowerCase();
+          return fn.endsWith('/' + editFile.toLowerCase()) || fn.includes('/' + editFile.toLowerCase());
+        }) : null;
+        const fileContent = absFile ? await readFile(absFile).catch(() => '') : '';
+        // Extract function name and specific change from the user's question
+        const fnRequest = trimmed.match(/(?:function\s+)?(\w+)\s*\([^)]*\)/);
+        const fnName = fnRequest ? fnRequest[1] : 'handle';
+        const changeRequest = trimmed.replace(/.*?(?:edit|change|modify|add|update|fix)\s.*?(?:function\s+)?\w+\s*\([^)]*\)\s*/i, '').replace(/^to\s+/i, '').trim() || '';
+
         while (editMatch && retries < 2) {
           const hasEditBlock = currentReply.includes('SEARCH') || /```\w+:[^\s]/.test(currentReply);
           if (hasEditBlock) break;
           const hasCodeBlock = currentReply.includes('```');
           if (hasCodeBlock) {
-            // Only skip retry if a code block IS a function edit (matches func regex)
+            // Only skip retry if a code block IS a substantive function edit (not cosmetic)
             const codeBlocks = currentReply.match(/```[\w.]*\n[\s\S]*?```/g);
-            const hasFuncEdit = codeBlocks?.some(block => {
+            const hasSubstantiveEdit = codeBlocks?.some(block => {
               const c = block.replace(/```[\w.]*\n?/, '').replace(/\n```$/, '').trim();
-              return /function\s+\w+\s*\(/.test(c);
+              const m = c.match(/function\s+(\w+)\s*\(/);
+              if (!m) return false;
+              // Compare with original — skip retry only if at least 2 lines differ
+              if (fileContent && fnName) {
+                const lines = fileContent.split('\n');
+                const fnIdx = lines.findIndex(l => new RegExp(`function\\s+${fnName}\\s*\\(`).test(l));
+                if (fnIdx >= 0) {
+                  let depth = 0, endIdx = fnIdx, started = false;
+                  for (let i = fnIdx; i < lines.length && i < fnIdx + 300; i++) {
+                    for (const ch of lines[i]) {
+                      if (ch === '{') { depth++; started = true; }
+                      if (ch === '}') depth--;
+                    }
+                    if (started && depth <= 0 && i > fnIdx) { endIdx = i; break; }
+                  }
+                  const orig = lines.slice(fnIdx, endIdx + 1).join('\n');
+                  const oL = orig.split('\n'), nL = c.split('\n');
+                  let diffCount = 0;
+                  for (let i = 0; i < Math.max(oL.length, nL.length); i++) {
+                    if ((oL[i] || '').trim() !== (nL[i] || '').trim()) diffCount++;
+                  }
+                  return diffCount >= 2; // only skip if substantive
+                }
+              }
+              return true; // can't compare, assume substantive
             });
-            if (hasFuncEdit) break; // let code block fallback handle it
+            if (hasSubstantiveEdit) break; // let code block fallback handle it
           }
           const refusalPatterns = /\b(cannot|can't|i don't see|i can see fragments|not able to|unable to)\b/i;
           if (!refusalPatterns.test(currentReply) && !hasCodeBlock) break;
 
           retries++;
-          // Read the target file and find the target function to give precise instructions
-          const editFile = editMatch[1].replace(/[.,;:!?)]$/, '');
-          const absFile = allFiles.find(f => {
-            const fn = f.replace(/\\/g, '/').toLowerCase();
-            return fn.endsWith('/' + editFile.toLowerCase()) || fn.includes('/' + editFile.toLowerCase());
-          });
-          const fileContent = absFile ? await readFile(absFile).catch(() => '') : '';
-          // Extract function name from the user's question
-          const fnRequest = trimmed.match(/(?:function\s+)?(\w+)\s*\([^)]*\)/);
-          const fnName = fnRequest ? fnRequest[1] : 'handle';
-          // Find the target function in the file and include it in the prompt
+          // Find the target function text for the retry prompt
           let funcText = '';
           if (fnName && fileContent) {
             const lines = fileContent.split('\n');
@@ -462,10 +488,10 @@ program
             }
           }
           const retry = '\n[System] You MUST modify the `' + fnName + '` function in `' + editFile + '`.\n' +
-            'Do NOT suggest alternative approaches (middleware, routes, etc.).\n' +
-            'Edit the ' + fnName + ' function directly. Output a SEARCH/REPLACE block.\n' +
-            (funcText ? 'The existing ' + fnName + ' function is:\n```\n' + funcText + '\n```\n' : '') +
-            (fileContent && !funcText ? '\nFile ' + editFile + ':\n```\n' + fileContent.slice(0, 2500) + '\n```' : '');
+            'Do NOT suggest alternative approaches. Do NOT just reformat or add comments.\n' +
+            'Make the ACTUAL change requested: ' + changeRequest + '\n' +
+            (funcText ? 'The existing ' + fnName + ' function:\n```\n' + funcText + '\n```\n' : '') +
+            'Output a SEARCH/REPLACE block with the function text EXACTLY as shown in SEARCH.';
           messages.push({ role: 'user', content: retry });
           process.stdout.write(`\n\x1b[36mAssistant\x1b[0m:\n`);
           currentReply = await runChat(messages);
@@ -621,6 +647,14 @@ program
                       startIdx = oldLines.findIndex(l => simpleRegex.test(l));
                     }
                     if (startIdx >= 0) {
+                      // Strip any lines before the function definition in the code block
+                      // (LLMs often add JSDoc/comments above the function)
+                      let cleanContent = newContent;
+                      const defIdx = cleanContent.search(
+                        new RegExp(`(?:\\w+(?:\\.\\w+)*\\s*(?:\\.\\s*prototype\\s*\\.\\s*)?=\\s*)?function\\s+${funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`)
+                      );
+                      if (defIdx > 0) cleanContent = cleanContent.slice(defIdx).trim();
+                      if (!cleanContent) cleanContent = newContent;
                       // Find end of old function by brace matching
                       let depth = 0;
                       let endIdx = startIdx;
@@ -632,17 +666,17 @@ program
                         }
                         if (started && depth <= 0 && i > startIdx) { endIdx = i; break; }
                       }
-                      if (endIdx <= startIdx) endIdx = Math.min(startIdx + newContent.split('\n').length, oldLines.length);
+                      if (endIdx <= startIdx) endIdx = Math.min(startIdx + cleanContent.split('\n').length, oldLines.length);
                       const oldFunc = oldLines.slice(startIdx, endIdx + 1).join('\n');
                       const newHead = oldLines.slice(0, startIdx).join('\n');
                       const newTail = oldLines.slice(endIdx + 1).join('\n');
-                      const fullNew = (newHead ? newHead + '\n' : '') + newContent + (newTail ? '\n' + newTail : '');
+                      const fullNew = (newHead ? newHead + '\n' : '') + cleanContent + (newTail ? '\n' + newTail : '');
                       process.stdout.write(`\n\x1b[33mProposed function edit:\x1b[0m\n`);
                       process.stdout.write(`\x1b[35m--- ${targetFile}:${startIdx + 1}\x1b[0m\n`);
                       process.stdout.write(`\x1b[36m+++ (proposed)\x1b[0m\n`);
                       const difLines = [];
                       const oldLines2 = oldFunc.split('\n');
-                      const newLines2 = newContent.split('\n');
+                      const newLines2 = cleanContent.split('\n');
                       const maxLines = Math.max(oldLines2.length, newLines2.length);
                       for (let i = 0; i < maxLines && i < 12; i++) {
                         if (i < oldLines2.length && i < newLines2.length && oldLines2[i] === newLines2[i]) {
