@@ -2,7 +2,7 @@
 
 import { Command } from 'commander';
 import { createInterface } from 'readline';
-import { basename } from 'path';
+import { basename, join } from 'path';
 import { createRequire } from 'module';
 import { readFile } from './fs-utils.js';
 const require = createRequire(import.meta.url);
@@ -293,19 +293,29 @@ program
 
       // ─ Build context ─────────────────────────────────────────────────────────
       const symbols = extractSymbols(trimmed);
-      const fileRefs = extractFileRefs(trimmed, allFiles);
+      let fileRefs = extractFileRefs(trimmed, allFiles);
 
-      // Auto-detect edit intent: if question mentions editing and a file path,
-      // load the full file so the LLM can see all content
-      const editFilePattern = /(?:edit|change|modify|add|update|fix|remove|delete|append|prepend|insert)\s.*?([^\s,;]+\.\w+)/i;
-      const editIntent = trimmed.match(editFilePattern);
-      if (editIntent) {
-        const candidate = editIntent[1].replace(/[.,;:!?)]$/, '');
-        // Try to find the file in allFiles
-        const matchFile = allFiles.find(f => f.replace(/\\/g, '/').toLowerCase().includes(candidate.toLowerCase())
-          || f.split(/[/\\]/).pop().toLowerCase() === candidate.toLowerCase());
-        if (matchFile && !fileRefs.includes(matchFile)) {
-          fileRefs.push(matchFile);
+      // Auto-detect edit intent: scan the question for "edit <filepath>" patterns
+      // and try to read the file directly from disk
+      const editActionPattern = /(?:edit|change|modify|add|update|fix|remove|delete|append|prepend|insert)\s.*?([^\s,;]+\.\w+)/i;
+      const editMatch = trimmed.match(editActionPattern);
+      if (editMatch) {
+        const candidate = editMatch[1].replace(/[.,;:!?)]$/, '');
+        process.stderr.write(`\x1b[90m[edit-detect] candidate="${candidate}" fileRefs=${JSON.stringify(fileRefs)}\x1b[0m\n`);
+        // Try matching against allFiles first (like extractFileRefs)
+        const found = allFiles.find(f => {
+          const fn = f.replace(/\\/g, '/').toLowerCase();
+          const cn = candidate.toLowerCase();
+          return fn.endsWith('/' + cn) || fn === cn || fn.includes('/' + cn);
+        });
+        if (found) {
+          process.stderr.write(`\x1b[90m[edit-detect] matched in allFiles: ${found}\x1b[0m\n`);
+          if (!fileRefs.includes(found)) fileRefs.push(found);
+        } else if (candidate.includes('/') || candidate.includes('\\')) {
+          // File not in allFiles — try reading from project dir
+          const absPath = join(dir, candidate);
+          process.stderr.write(`\x1b[90m[edit-detect] not in allFiles, trying: ${absPath}\x1b[0m\n`);
+          fileRefs.push(absPath);
         }
       }
       const ctxSpinner = ora({
