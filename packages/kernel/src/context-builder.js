@@ -90,6 +90,46 @@ function shortenPath(pathStr, maxSegments = 4) {
   return `.../${parts.slice(-maxSegments).join('/')}`;
 }
 
+function extractFunctionPatterns(question) {
+  // Look for patterns like: handle(req, res, callback) or handle(req, res)
+  // Matches a word followed by parenthesized params
+  const patterns = [];
+  const regex = /(\w+)\s*\([^)]*\)/g;
+  let m;
+  while ((m = regex.exec(question)) !== null) {
+    patterns.push(m[1].toLowerCase());
+  }
+  return [...new Set(patterns)];
+}
+
+function findFunctionInContent(content, funcName) {
+  const lines = content.split('\n');
+  const results = [];
+  const patterns = [
+    new RegExp(`function\\s+${funcName}\\s*\\(`, 'i'),
+    new RegExp(`=\\s*function\\s*${funcName}\\s*\\(`, 'i'),
+    new RegExp(`=\\s*function\\s*\\(`, 'i'),
+    new RegExp(`:\\s*function\\s*\\(`, 'i'),
+    new RegExp(`\\.${funcName}\\s*=\\s*function`, 'i'),
+    new RegExp(`\\.${funcName}\\s*=\\s*\\(`, 'i'),
+    new RegExp(`${funcName}\\s*:\\s*function`, 'i'),
+    new RegExp(`${funcName}\\s*\\(`, 'i'),
+  ];
+  for (let i = 0; i < lines.length; i++) {
+    for (const pat of patterns) {
+      if (pat.test(lines[i])) {
+        const startLine = i + 1;
+        const endLine = Math.min(lines.length, i + 80);
+        if (endLine > startLine) {
+          results.push({ startLine, endLine, matchLine: lines[i].trim() });
+        }
+        break;
+      }
+    }
+  }
+  return results;
+}
+
 function formatTrace(trace, bfsLogs, projectRoot) {
   if (trace.length === 0) return '';
   const lines = ['\x1b[90m\x1b[1mRetrieval trace:\x1b[0m'];
@@ -162,6 +202,36 @@ export async function buildChatContext(question, index, allFiles, graph, fileRef
       bfsLogs.push(`  [file-ref] loaded ${fp} (${lineCount} lines)`);
     } catch {
       bfsLogs.push(`  [file-ref] failed to load ${fp}`);
+    }
+  }
+
+  // Phase 0.5: Extract specific functions mentioned in the question
+  const funcNames = extractFunctionPatterns(question);
+  if (funcNames.length > 0) {
+    for (const fp of fileRefs) {
+      if (used.value >= budget) break;
+      let content = _fileCache.get(fp);
+      if (!content) {
+        try {
+          const raw = await readFile(fp);
+          content = raw.split('\n');
+          _fileCache.set(fp, content);
+        } catch { continue; }
+      }
+      const fullText = content.join('\n');
+      for (const fn of funcNames) {
+        const matches = findFunctionInContent(fullText, fn);
+        for (const m of matches.slice(0, 3)) {
+          const funcText = content.slice(m.startLine - 1, m.endLine).join('\n').trim();
+          if (funcText.length < 20) continue;
+          // Add surrounding context (5 lines before, 2 after)
+          const ctxStart = Math.max(1, m.startLine - 5);
+          const ctxEnd = Math.min(content.length, m.endLine + 2);
+          const ctxText = content.slice(ctxStart - 1, ctxEnd).join('\n');
+          tryAddSection(fp, ctxStart, ctxEnd, ctxText, `function ${fn}`, trace, 'file-ref');
+          bfsLogs.push(`  [func-ref] ${fp}:${m.startLine}–${m.endLine} "${m.matchLine}"`);
+        }
+      }
     }
   }
 
