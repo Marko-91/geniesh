@@ -12,7 +12,9 @@
   "dependencies": {
     "commander": "^12.0.0",
     "ora": "^9.4.0",
-    "stream-json": "^3.1.0"
+    "stream-json": "^3.1.0",
+    "tree-sitter-php": "^0.24.2",
+    "web-tree-sitter": "^0.26.9"
   },
   "scripts": {
     "build": "esbuild src/cli.js --bundle --platform=node --target=node18 --format=esm --outfile=dist/cli.js --external:ora --external:commander",

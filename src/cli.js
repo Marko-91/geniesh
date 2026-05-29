@@ -12,7 +12,7 @@ import { extractFunction } from './extractor.js';
 import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './indexer.js';
 import { tryLoadGraph, graphExists, loadGraph } from './relations.js';
 import { search } from './search.js';
-import { buildPrompt, buildDirectPrompt } from './prompt.js';
+import { buildPrompt, buildDirectPrompt, SYSTEM_RULES } from './prompt.js';
 import { runQuery, runChat, runGenerate, setModel } from './runner.js';
 import { setEmbedder } from './embedder.js';
 import { runEval, formatEvalResults } from './eval.js';
@@ -24,6 +24,9 @@ import { webSearch, formatSearchResults } from './web-search.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
 import { extractSymbols } from './symbol-utils.js';
 import { scanDir, extractFileRefs } from './fs-utils.js';
+import { profileProject } from './profiler.js';
+import { lazyBuildContext, clearLazyCache } from './lazy-indexer.js';
+import { loadDefaultLanguages, getLanguages } from './languages/index.js';
 import { parseFileEdits, formatDiff, formatSearchReplaceDiff, applySearchReplace, applyFullFileEdit } from './diff-apply.js';
 import { parseShellCommands, runShellCommand, formatCommandResult } from './terminal-agent.js';
 import { execSync } from 'child_process';
@@ -79,10 +82,11 @@ program
   .option('--files <paths...>', 'Explicit files to use as context (skips auto-index)')
   .option('--dirs <paths...>', 'Explicit directories to scan as context (skips auto-index)')
   .option('--budget <chars>', 'Context budget in characters (default: 128000)', parseInt)
+  .option('--full-index', 'Use full pre-indexing (old behaviour) instead of lazy mode')
   .action(async (opts) => {
     const dir = opts.dir || process.cwd();
 
-    let index;
+    let index = [];
     let graph;
     let allFiles;
     const hasExplicit = (opts.files && opts.files.length > 0) || (opts.dirs && opts.dirs.length > 0);
@@ -97,95 +101,68 @@ program
       console.log(`\n📎  Explicit context: ${explicitFiles.length} file(s)\n`);
       index = await buildIndexFromFileList(explicitFiles);
       allFiles = explicitFiles;
-    } else if (await indexExists() && await graphExists()) {
-      const loadSpinner = ora('Loading index + graph…').start();
-      index = await loadIndex();
-      graph = await loadGraph();
-      loadSpinner.succeed(`Index: ${index.length} chunks · Graph: ${graph.nodes.size} nodes, ${graph.edges.length} edges`);
-      allFiles = await scanDir(dir);
+    } else if (opts.fullIndex) {
+      if (await indexExists() && await graphExists()) {
+        const loadSpinner = ora('Loading index + graph…').start();
+        index = await loadIndex();
+        graph = await loadGraph();
+        loadSpinner.succeed(`Index: ${index.length} chunks · Graph: ${graph.nodes.size} nodes, ${graph.edges.length} edges`);
+        allFiles = await scanDir(dir);
+      } else {
+        console.log(`\n⚠️  No index found. Building index + graph for ${dir}…\n`);
+        index = await buildIndex(dir);
+        graph = await loadGraph();
+        allFiles = await scanDir(dir);
+      }
     } else {
-      console.log(`\n⚠️  No index found. Building index + graph for ${dir}…\n`);
-      index = await buildIndex(dir);
-      graph = await loadGraph();
+      const lazySpinner = ora('Loading language modules…').start();
+      await loadDefaultLanguages();
+      lazySpinner.succeed(`Languages: ${getLanguages().map(l => l.id).join(', ')}`);
+
+      const profileSpinner = ora('Profiling project…').start();
+      const profile = await profileProject(dir);
+      if (profile.languages.length > 0) {
+        profileSpinner.succeed(`Project: ${profile.languages.map(l => `${l.id} ${l.percentage}%`).join(' · ')} | ${profile.fileCount} files | ${profile.keyFiles.length} key files`);
+      } else {
+        profileSpinner.succeed(`Project: ${profile.fileCount} files, ${profile.keyFiles.length} key files`);
+      }
+      const scanSpinner = ora('Scanning project files…').start();
       allFiles = await scanDir(dir);
+      scanSpinner.succeed(`Found ${allFiles.length} files`);
+      // Store profile on global opts for the chat loop
+      opts._profile = profile;
+      opts._lazyMode = true;
     }
 
-    // ─ 3. System prompt ───────────────────────────────────────────────────────
+    // ─ 3. Lamp info (genie's environment) ─────────────────────────────────
+    const os = await import('os');
+    const arch = os.arch(); // x64, arm64, etc.
+    const platform = os.platform(); // linux, darwin, win32
+    let lampInfo = `${platform} (${arch})`;
+    try {
+      if (platform === 'linux') {
+        const osRelease = await readFile('/etc/os-release', 'utf-8');
+        const name = (osRelease.match(/^PRETTY_NAME="(.+)"$/m) || osRelease.match(/^PRETTY_NAME=(.+)$/m))?.[1] || 'Linux';
+        lampInfo = `${name} (${arch})`;
+      } else if (platform === 'darwin') {
+        const swVers = await readFile('/System/Library/CoreServices/SystemVersion.plist', 'utf-8').catch(() => '');
+        const ver = swVers.match(/<key>ProductVersion<\/key>\s*<string>([^<]+)<\/string>/)?.[1] || os.release();
+        lampInfo = `macOS ${ver} (${arch})`;
+      } else if (platform === 'win32') {
+        lampInfo = `Windows (${arch})`;
+      }
+    } catch {}
+
+    // ─ 4. System prompt ───────────────────────────────────────────────────────
     const messages = [
       {
         role: 'system',
-        content:
-          'You are a senior software engineer with full read/write access to the\n' +
-          'codebase. When asked to make changes, output edit blocks — they will be\n' +
-          'parsed and applied automatically. NEVER say you "cannot" make changes.\n' +
-          'You MUST output SEARCH/REPLACE or full-file edit blocks as instructed.\n\n' +
-          'Example of how you MUST respond to edit requests:\n' +
-          '  User: add a comment at the top of lib/application.js that says\n' +
-          '    "// Express.js application module"\n' +
-          '  You:\n' +
-          '    lib/application.js\n' +
-          '    SEARCH\n' +
-          '    /*!\n' +
-          '     * Express - application\n' +
-          '     * Copyright(c) 2010 TJ Holowaychuk <tj@vision-media.ca>\n' +
-          '     * MIT Licensed\n' +
-          '     */\n' +
-          '    REPLACE\n' +
-          '    // Express.js application module\n' +
-          '    /*!\n' +
-          '     * Express - application\n' +
-          '     * Copyright(c) 2010 TJ Holowaychuk <tj@vision-media.ca>\n' +
-          '     * MIT Licensed\n' +
-          '     */\n' +
-          '  (Then the system applies the edit and asks for confirmation.)\n\n' +
-          'Rules:\n' +
-          '- Every claim about code MUST cite the exact file and line number\n' +
-          '  from the codebase_context above. If the file or line is not in the\n' +
-          '  context, do not cite it.\n' +
-          '- If you cannot cite it, it is not in the code — state that clearly.\n' +
-          '- You may use general knowledge for analysis and suggestions, but preface\n' +
-          '  general advice with "In general:" or "A common pattern is:" so the user\n' +
-          '  knows it is not from the code.\n' +
-          '- Never invent file names, function names, or line numbers.\n' +
-          '- Prefer simple, minimal changes. Do not propose additional abstraction\n' +
-          '  layers unless the existing code demonstrably fails at its task.\n' +
-          '- If the user message contains a [Web page content] section,\n' +
-          '  the content was fetched from a URL they asked about. Use it to answer\n' +
-          '  their question — it is as authoritative as the codebase context.\n' +
-          '- In the codebase context above, sections labeled "file-ref:" contain\n' +
-          '  the ENTIRE file content (not just a window). Use the full content\n' +
-          '  from these sections when you need to propose SEARCH/REPLACE edits.\n' +
-          '- To make changes, you MUST output edits using one of these formats.\n' +
-          '  They WILL be detected and offered to the user for approval.\n' +
-          '  1) Search/replace (for targeted changes — preferred):\n' +
-          '     File path on its own line, then SEARCH, then the EXACT text to\n' +
-          '     find, then REPLACE, then the new text. Example:\n' +
-          '       lib/application.js\n' +
-          '       SEARCH\n' +
-          '       // MIT Licensed\n' +
-          '       REPLACE\n' +
-          '       // Express.js application module\n' +
-          '       // MIT Licensed\n' +
-          '     The SEARCH text must match the file exactly — copy it character\n' +
-          '     for character from the codebase context above.\n' +
-          '  2) Full-file (for rewrites):\n' +
-          '     A fenced code block with language, colon, and path:\n' +
-          '       ```js:lib/application.js\n' +
-          '       // Express.js application module\n' +
-          '       /*!\n' +
-          '        * Express - application\n' +
-          '        * Copyright(c) 2010 TJ Holowaychuk\n' +
-          '        * MIT Licensed\n' +
-          '        */\n' +
-          '       ```\n' +
-          '- You can execute shell commands by outputting a fenced code block\n' +
-          '  with the bash language tag. They will also be detected and offered\n' +
-          '  to the user. Example:\n' +
-          '    ```bash\n' +
-          '    npm install express\n' +
-          '    ```\n' +
-          '  After running a command, you will see its output and can continue\n' +
-          '  with the next step.',
+        content: `You are running on: ${lampInfo}\n\n` + SYSTEM_RULES + (
+          '\n\nTips: NEVER say you "cannot" make changes. When asked to make changes,\n' +
+          'output edit blocks — they will be parsed and applied automatically.\n' +
+          'After running a command you will see its output and can continue.\n' +
+          'Be concise and practical.'
+        ),
       },
     ];
 
@@ -201,6 +178,7 @@ program
     }
     console.log(`🧩  Model     : ${program.opts().model || 'qwen3-coder'}`);
     console.log(`🔤  Embedder  : ${program.opts().embedder || 'nomic-embed-text'}`);
+    if (lampInfo) console.log(`🏺  Lamp      : ${lampInfo}`);
     console.log(`📚  Index     : ${index.length} chunks`);
     if (graph) console.log(`🔗  Graph     : ${graph.nodes.size} nodes · ${graph.edges.length} edges · ${graph.communityCount} communities`);
     console.log('────────────────────────────────────────────────────────────\n');
@@ -354,31 +332,51 @@ program
       }
       const ctxSpinner = ora({
         text: symbols.length
-          ? `Building context (BFS + RAG: ${symbols.join(', ')})…`
+          ? `Building context (${opts._lazyMode ? 'lazy' : 'BFS + RAG'}: ${symbols.join(', ')})…`
           : fileRefs.length
             ? `Building context (files: ${fileRefs.map(f => basename(f)).join(', ')})…`
-            : 'Building context (RAG)…',
+            : 'Building context…',
         color: 'cyan',
       }).start();
 
       let contextText = '';
       try {
-        if (opts.budget && graph) graph._budget = opts.budget;
-        const { contextString, trace } = await buildChatContext(trimmed, index, allFiles, graph, fileRefs, search);
-        contextText = contextString;
-        const bfsCount = trace.filter(t => t.method === 'bfs').length;
-        const ragCount = trace.filter(t => t.method === 'rag').length;
-        const refCount = trace.filter(t => t.method === 'file-ref').length;
-        const tokenEst = Math.round(contextString.length / 4);
-        const budget = graph?._budget || 128000;
-        const pct = Math.round(contextString.length / budget * 100);
-        ctxSpinner.succeed(`Context: ${trace.length} windows` +
-          (bfsCount ? ` (${bfsCount} BFS` : '') +
-          (ragCount ? ` + ${ragCount} RAG` : '') +
-          (refCount ? ` + ${refCount} ref` : '') +
-          ((bfsCount || ragCount || refCount) ? ')' : '') +
-          ` — ${tokenEst.toLocaleString()} tok` +
-          (graph ? ` (${pct}%)` : ''));
+        if (opts._lazyMode) {
+          const profile = opts._profile;
+          const langIds = profile.languages.map(l => l.id);
+          const activeMods = getLanguages().filter(m => langIds.includes(m.id) || m.id === 'generic');
+          const { contextString, trace } = await lazyBuildContext(trimmed, dir, profile, { budget: opts.budget || 128000 });
+          contextText = contextString;
+          const grepCount = trace.filter(t => t.method === 'grep').length;
+          const bfsCount = trace.filter(t => t.method === 'bfs').length;
+          const ragCount = trace.filter(t => t.method === 'rag').length;
+          const profileCount = trace.filter(t => t.method === 'profile').length;
+          const tokenEst = Math.round(contextString.length / 4);
+          ctxSpinner.succeed(`Context: ${trace.length} windows` +
+            (profileCount ? ` (${profileCount} profile` : '') +
+            (grepCount ? ` + ${grepCount} grep` : '') +
+            (bfsCount ? ` + ${bfsCount} BFS` : '') +
+            (ragCount ? ` + ${ragCount} BM25` : '') +
+            ((profileCount || grepCount || bfsCount || ragCount) ? ')' : '') +
+            ` — ${tokenEst.toLocaleString()} tok`);
+        } else {
+          if (opts.budget && graph) graph._budget = opts.budget;
+          const { contextString, trace } = await buildChatContext(trimmed, index, allFiles, graph, fileRefs, search);
+          contextText = contextString;
+          const bfsCount = trace.filter(t => t.method === 'bfs').length;
+          const ragCount = trace.filter(t => t.method === 'rag').length;
+          const refCount = trace.filter(t => t.method === 'file-ref').length;
+          const tokenEst = Math.round(contextString.length / 4);
+          const budget = graph?._budget || 128000;
+          const pct = Math.round(contextString.length / budget * 100);
+          ctxSpinner.succeed(`Context: ${trace.length} windows` +
+            (bfsCount ? ` (${bfsCount} BFS` : '') +
+            (ragCount ? ` + ${ragCount} RAG` : '') +
+            (refCount ? ` + ${refCount} ref` : '') +
+            ((bfsCount || ragCount || refCount) ? ')' : '') +
+            ` — ${tokenEst.toLocaleString()} tok` +
+            (graph ? ` (${pct}%)` : ''));
+        }
 
       } catch (err) {
         ctxSpinner.warn(`Context build failed (${err.message}), falling back to plain message`);
@@ -798,6 +796,83 @@ program
             }
           }
         }
+
+        // ─ Refinement loop: if model emits SIGNAL_REQUERY, load missing files and retry ─
+        const MAX_REFINES = 3;
+        let refineCount = 0;
+        let refinedReply = currentReply;
+        const originalQuestion = trimmed;
+
+        while (refineCount < MAX_REFINES) {
+          // Priority 1: deterministic SIGNAL_REQUERY path/to/file
+          const signalMatch = refinedReply.match(/^SIGNAL_REQUERY\s+(.+)$/m);
+
+          // Priority 2: natural language fallback — explicit "cannot find / not in context"
+          let naturalMatch = null;
+          if (!signalMatch) {
+            const nlRe = /\b(?:cannot|cannot|(?:not\s+(?:in\s+(?:the\s+)?)?(?:provided\s+)?context)|(?:unable\s+to\s+(?:find|locate|determine)))\b/i;
+            if (nlRe.test(refinedReply)) {
+              const pathPattern = /["`']?((?:[a-zA-Z0-9_./-]+\/)*[a-zA-Z0-9_-]+\.[a-z]+)["`']?/g;
+              const matches = [...refinedReply.matchAll(pathPattern)].map(m => m[1]);
+              if (matches.length > 0) naturalMatch = matches;
+            }
+          }
+
+          const signal = signalMatch ? [signalMatch[1]] : null;
+          const rawPaths = signal || naturalMatch;
+          if (!rawPaths) break;
+
+          const rawPath = signalMatch[1].trim();
+          // Resolve candidates to actual files
+          const resolvedRefs = [];
+          for (const rawPath of rawPaths) {
+            const found = allFiles.find(f => {
+              const fn = f.replace(/\\/g, '/').toLowerCase();
+              const rp = rawPath.replace(/\\/g, '/').toLowerCase();
+              return fn.endsWith('/' + rp) || fn === rp || fn.endsWith(rp);
+            });
+            if (found) {
+              if (!resolvedRefs.includes(found)) resolvedRefs.push(found);
+            } else {
+              // Try extension-agnostic fallback — e.g. model says "Container.php" but file is "src/Container/Container.php"
+              const baseName = rawPath.split('/').pop().toLowerCase();
+              const found2 = allFiles.find(f => f.split(/[/\\]/).pop().toLowerCase() === baseName);
+              if (found2 && !resolvedRefs.includes(found2)) resolvedRefs.push(found2);
+            }
+          }
+          if (resolvedRefs.length === 0) break;
+
+          // Build targeted context for the missing files
+          let extraContext = '';
+          for (const f of resolvedRefs.slice(0, 3)) {
+            const content = await readFile(f).catch(() => '');
+            if (content.trim()) {
+              const relPath = f.replace(/\\/g, '/').replace(process.cwd().replace(/\\/g, '/') + '/', '');
+              extraContext += `\n// file-ref: ${relPath}\n${content.substring(0, 8000)}\n`;
+            }
+          }
+
+          if (!extraContext) break;
+          refineCount++;
+
+          const refFilesList = resolvedRefs.slice(0, 3).map(f => {
+            const rel = f.replace(/\\/g, '/').replace(process.cwd().replace(/\\/g, '/') + '/', '');
+            return `  - ${rel}`;
+          }).join('\n');
+
+          process.stdout.write(`\n\x1b[33m(🔍 Refining — loading ${resolvedRefs.length} file(s)…)${refineCount < MAX_REFINES ? ` iteration ${refineCount}/${MAX_REFINES}` : ' last attempt'}\x1b[0m\n`);
+
+          const refinePrompt = `I found the additional files you mentioned:\n${refFilesList}\n\nHere is their full content:\n${extraContext}\n\nPlease answer the original question using this additional context. Do not say you cannot find the information — it is provided above.\n\nOriginal question: ${originalQuestion}`;
+
+          messages.push({ role: 'user', content: refinePrompt });
+          process.stdout.write(`\x1b[36mAssistant\x1b[0m:\n`);
+          refinedReply = await runChat(messages);
+          messages.push({ role: 'assistant', content: refinedReply });
+          process.stdout.write(`${refinedReply}\n`);
+        }
+
+        // If refinements happened, use the final refined reply for edit detection
+        if (refineCount > 0) currentReply = refinedReply;
       } catch (err) {
         console.error(`\nError: ${err.message}`);
         messages.pop();

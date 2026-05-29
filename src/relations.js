@@ -4,7 +4,7 @@ import { chain } from 'stream-chain';
 import { parserStream } from 'stream-json';
 import { disassembler } from 'stream-json/disassembler.js';
 import { stringer } from 'stream-json/stringer.js';
-import { Assembler } from 'stream-json/Assembler.js';
+import { Assembler } from 'stream-json/assembler.js';
 import { buildRelations as kernelBuildRelations } from '../packages/kernel/src/relations.js';
 import { CodeGraph } from '../packages/kernel/src/graph-engine.js';
 import { loadIgnoreFile } from '../packages/kernel/src/fs-utils.js';

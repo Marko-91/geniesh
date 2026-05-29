@@ -41,6 +41,9 @@ export async function search(queryText, index, topK = 5) {
     score: cosine(queryEmbedding, entry.embedding),
   }));
 
-  scored.sort((a, b) => b.score - a.score);
+  const LOW_PRIORITY_DIRS = ['/types/', '/vendor/', '/node_modules/', '/tests/'];
+  const boost = (file) => LOW_PRIORITY_DIRS.some(d => file.includes(d)) ? -0.15 : 0;
+
+  scored.sort((a, b) => (b.score + boost(b.file)) - (a.score + boost(a.file)));
   return scored.slice(0, topK);
 }

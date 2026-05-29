@@ -1,3 +1,4 @@
+import { existsSync } from 'fs';
 import { extname, dirname, join } from 'path';
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
@@ -30,10 +31,24 @@ export async function ensureTSParsers() {
   if (tsParsersInit) return;
   tsParsersInit = true;
   const __dirname = dirname(fileURLToPath(import.meta.url));
-  const wasmPath = join(__dirname, '..', '..', 'node_modules', 'web-tree-sitter', 'web-tree-sitter.wasm');
+
+  // Resolve node_modules relative to project root (monorepo-compatible)
+  const rootCandidates = [
+    join(__dirname, '..', '..', '..', '..', 'node_modules'),
+    join(__dirname, '..', '..', 'node_modules'),
+    join(__dirname, '..', 'node_modules'),
+    join(process.cwd(), 'node_modules'),
+  ];
+  const nodeModulesDir = rootCandidates.find(d => {
+    try { return existsSync(join(d, 'web-tree-sitter', 'web-tree-sitter.wasm')); }
+    catch { return false; }
+  });
+    if (!nodeModulesDir) { console.warn('[geniesh] tree-sitter wasm not found — falling back to generic parser'); return; }
+
+  const wasmPath = join(nodeModulesDir, 'web-tree-sitter', 'web-tree-sitter.wasm');
 
   try {
-    const Parser = (await import('web-tree-sitter')).default;
+    const { Parser, Language } = await import('web-tree-sitter');
     await Parser.init({ locateFile: () => wasmPath });
 
     const langs = [
@@ -49,8 +64,8 @@ export async function ensureTSParsers() {
 
     for (const { ext, file } of langs) {
       try {
-        const wasmFile = join(__dirname, '..', '..', 'node_modules', file);
-        const language = await Parser.Language.load(wasmFile);
+        const wasmFile = join(nodeModulesDir, file);
+        const language = await Language.load(wasmFile);
         const parser = new Parser();
         parser.setLanguage(language);
         TS_PARSERS.set(ext, parser);
