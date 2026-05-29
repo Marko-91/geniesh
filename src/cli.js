@@ -345,19 +345,21 @@ program
           const profile = opts._profile;
           const langIds = profile.languages.map(l => l.id);
           const activeMods = getLanguages().filter(m => langIds.includes(m.id) || m.id === 'generic');
-          const { contextString, trace } = await lazyBuildContext(trimmed, dir, profile, { budget: opts.budget || 128000 });
+          const { contextString, trace } = await lazyBuildContext(trimmed, dir, profile, { budget: opts.budget || 128000, fileRefs });
           contextText = contextString;
           const grepCount = trace.filter(t => t.method === 'grep').length;
           const bfsCount = trace.filter(t => t.method === 'bfs').length;
           const ragCount = trace.filter(t => t.method === 'rag').length;
           const profileCount = trace.filter(t => t.method === 'profile').length;
+          const refCount = trace.filter(t => t.method === 'file-ref').length;
           const tokenEst = Math.round(contextString.length / 4);
           ctxSpinner.succeed(`Context: ${trace.length} windows` +
             (profileCount ? ` (${profileCount} profile` : '') +
             (grepCount ? ` + ${grepCount} grep` : '') +
             (bfsCount ? ` + ${bfsCount} BFS` : '') +
             (ragCount ? ` + ${ragCount} BM25` : '') +
-            ((profileCount || grepCount || bfsCount || ragCount) ? ')' : '') +
+            (refCount ? ` + ${refCount} ref` : '') +
+            ((profileCount || grepCount || bfsCount || ragCount || refCount) ? ')' : '') +
             ` — ${tokenEst.toLocaleString()} tok`);
         } else {
           if (opts.budget && graph) graph._budget = opts.budget;

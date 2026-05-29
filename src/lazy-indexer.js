@@ -300,19 +300,46 @@ export async function lazyBuildContext(question, dir, profile, options = {}) {
   const sections = [];
   const trace = [];
 
+  // 0. Load explicitly mentioned files (fileRefs)
+  const fileRefs = options.fileRefs || [];
+  const refSections = [];
+  const refTrace = [];
+  for (const fp of fileRefs) {
+    try {
+      const content = await readFileCached(fp);
+      if (content.trim().length > 0) {
+        const lines = content.split('\n');
+        refSections.push({
+          file: fp, startLine: 1, endLine: lines.length,
+          text: content,
+          label: `file-ref: ${relative(process.cwd(), fp)}`,
+        });
+        refTrace.push({ file: fp, startLine: 1, endLine: lines.length, method: 'file-ref' });
+      }
+    } catch {}
+  }
+
+  function mergeRefs(ctx) {
+    if (refSections.length === 0) return ctx;
+    const allSections = [...refSections, ...ctx.sections];
+    const allTrace = [...refTrace, ...ctx.trace];
+    const contextString = formatContextSections(allSections, budget);
+    return { contextString, trace: allTrace };
+  }
+
   // 1. Extract symbols from question
   const terms = extractQuerySymbols(question, languages);
   const hasSymbols = terms.length > 0;
 
   if (!hasSymbols) {
-    return handleVagueQuery(question, dir, profile, options);
+    return mergeRefs(await handleVagueQuery(question, dir, profile, options));
   }
 
   // 2. Smart grep
   const grepCandidates = await smartGrep(dir, terms, languages);
 
   if (grepCandidates.length === 0) {
-    return handleVagueQuery(question, dir, profile, options);
+    return mergeRefs(await handleVagueQuery(question, dir, profile, options));
   }
 
   // 3. Read matched file contents for BM25
@@ -416,7 +443,13 @@ export async function lazyBuildContext(question, dir, profile, options = {}) {
     trace.push({ file: c.file, startLine: 1, endLine: maxLen, method: 'rag', symbol: terms.join(', ') });
   }
 
-  // 12. Format context
+  // 12. Merge fileRefs into final result
+  if (refSections.length > 0) {
+    sections.unshift(...refSections);
+    trace.unshift(...refTrace);
+  }
+
+  // 13. Format context
   const contextString = formatContextSections(sections, budget);
   return { contextString, trace };
 }
