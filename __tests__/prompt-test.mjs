@@ -15,11 +15,13 @@ describe('prompt', () => {
       expect(result).toContain('Task:\nWhat does this do?');
     });
 
-    it('should truncate context if over limit', () => {
-      const longChunk = 'a'.repeat(9000);
-      const chunks = [{ file: 'a.js', chunk: longChunk, startLine: 1, endLine: 10 }];
+    it('should respect context char limit', () => {
+      const bigChunk = 'a'.repeat(15500);
+      const chunks = [{ file: 'a.js', chunk: bigChunk, startLine: 1, endLine: 10 }];
       const result = buildPrompt('query', chunks);
-      expect(result.length).toBeLessThan(10000);
+      expect(result).toContain('(lines 1–10)');
+      expect(result.length).toBeGreaterThan(10000);
+      expect(result.length).toBeLessThan(20000);
     });
   });
 
@@ -34,7 +36,7 @@ describe('prompt', () => {
     });
 
     it('should truncate code if over limit', () => {
-      const longCode = 'a'.repeat(9000);
+      const longCode = 'a'.repeat(18000);
       const result = buildDirectPrompt('query', longCode);
       expect(result).toContain('... (truncated)');
     });

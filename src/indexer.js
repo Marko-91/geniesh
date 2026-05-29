@@ -4,7 +4,7 @@ import { createWriteStream } from 'fs';
 import { chain } from 'stream-chain';
 import { disassembler } from 'stream-json/disassembler.js';
 import { stringer } from 'stream-json/stringer.js';
-import { scanDir, readFile as readSourceFile } from './fs-utils.js';
+import { scanDir, readFile as readSourceFile, loadIgnoreFile } from './fs-utils.js';
 import { chunkFile } from './chunker.js';
 import { embed, embedBatch } from './embedder.js';
 import { buildRelations, saveGraph, tryLoadGraph } from './relations.js';
@@ -38,8 +38,12 @@ async function tryLoadIndex() {
 export async function buildIndex(dir) {
   const t0 = performance.now();
 
+  const [ignorePatterns] = await Promise.all([
+    loadIgnoreFile(dir),
+  ]);
+
   const scanSpinner = ora(`Scanning ${dir}…`).start();
-  const files = await scanDir(dir);
+  const files = await scanDir(dir, ignorePatterns);
   const scanMs = ((performance.now() - t0) / 1000).toFixed(1);
   scanSpinner.succeed(`Found ${files.length} file(s) to index  (${scanMs}s)`);
 
