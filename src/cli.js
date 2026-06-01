@@ -14,7 +14,7 @@ import { extractFunction } from './extractor.js';
 import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './indexer.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt, SYSTEM_RULES } from './prompt.js';
-import { runQuery, runChat, runGenerate, setModel } from './runner.js';
+import { runQuery, runChat, runGenerate, setModel, getModel } from './runner.js';
 import { setEmbedder } from './embedder.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { extractUrls, fetchWebContent } from './web-fetch.js';
@@ -23,6 +23,7 @@ function applySlideWindow(messages, maxTurns = 8) {
   while (messages.length > 1 + maxTurns * 2) messages.splice(1, 2);
 }
 import { parseFileEdits, formatDiff, formatSearchReplaceDiff, applySearchReplace } from './diff-apply.js';
+const { structuredPatch } = require('diff');
 import { parseShellCommands, runShellCommand } from './terminal-agent.js';
 import { execSync } from 'child_process';
 import ora from 'ora';
@@ -124,15 +125,19 @@ async function handleSignals(reply, messages, root, ask, { maxIter = 3, compress
 // Edit detection (unchanged logic from prior cli.js)
 // ---------------------------------------------------------------------------
 
-async function handleEdits(reply, ask) {
+async function handleEdits(reply, ask, root) {
   const { scanDir } = await import('./fs-utils.js');
   let allFiles = [];
-  try { allFiles = await scanDir(process.cwd()); } catch { /* non-fatal */ }
+  try { allFiles = await scanDir(root || process.cwd()); } catch { /* non-fatal */ }
 
-  const edits = parseFileEdits(reply, allFiles).filter(e => e.type === 'sr');
+  const allEdits = parseFileEdits(reply, allFiles);
+  const srEdits = allEdits.filter(e => e.type === 'sr');
+  const fullEdits = allEdits.filter(e => e.type === 'full');
+  const applied = [];
   let lastEditError = null;
 
-  for (const edit of edits) {
+  // 1) Try SEARCH/REPLACE edits first
+  for (const edit of srEdits) {
     let diff, apply, originalContent;
     originalContent = await readFile(edit.file).catch(() => '');
     diff = formatSearchReplaceDiff(edit.file, edit.search, edit.replace, originalContent);
@@ -143,11 +148,13 @@ async function handleEdits(reply, ask) {
     if (!ans || ans.toLowerCase().startsWith('y') || ans === '') {
       try {
         await apply();
+        applied.push({ file: edit.file, search: edit.search, replace: edit.replace });
         if (/\.(js|mjs|cjs)$/i.test(edit.file)) {
           try {
             execSync(`node --check "${edit.file}"`, { stdio: 'pipe', timeout: 10000 });
             process.stdout.write(`\x1b[32m✓ ${edit.file} updated (syntax OK)\x1b[0m\n`);
           } catch (synErr) {
+            applied.pop();
             if (originalContent) await writeFile(edit.file, originalContent, 'utf-8');
             process.stdout.write(`\x1b[31m✗ ${edit.file} syntax check FAILED — reverted\x1b[0m\n`);
             process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
@@ -167,9 +174,34 @@ async function handleEdits(reply, ask) {
     }
   }
 
-  // Function-level fallback when SEARCH text not found
+  // 2) Full-file fallback — diff the rewrite against current file and show surgical changes
+  if (applied.length === 0 && fullEdits.length > 0) {
+    fullEditsLoop:
+    for (const edit of fullEdits) {
+      const oldContent = await readFile(edit.file).catch(() => '');
+      if (!oldContent) continue;
+      const diff = formatDiff(oldContent, edit.content, edit.file);
+      if (!diff) continue;
+      process.stdout.write(`\n\x1b[33m⚠ LLM output a full-file rewrite — surgical diff:\x1b[0m\n`);
+      process.stdout.write(`\n${diff}\n`);
+      const ans = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
+      if (!ans || ans.toLowerCase().startsWith('y') || ans === '') {
+        try {
+          await writeFile(edit.file, edit.content, 'utf-8');
+          applied.push({ file: edit.file, search: oldContent, replace: edit.content });
+          process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
+        } catch (err) {
+          process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
+        }
+      } else {
+        process.stdout.write(`\x1b[33mSkipped ${edit.file}\x1b[0m\n`);
+      }
+    }
+  }
+
+  // 3) Function-level fallback when SEARCH text not found
   if (lastEditError && lastEditError.message.includes('not found')) {
-    const srEdit = edits.find(e => e.type === 'sr');
+    const srEdit = srEdits.find(e => e.type === 'sr');
     if (srEdit) {
       const old = await readFile(srEdit.file).catch(() => '');
       if (old) {
@@ -198,6 +230,7 @@ async function handleEdits(reply, ask) {
             if (!ans2 || ans2.toLowerCase() === 'y' || ans2 === '') {
               try {
                 await writeFile(srEdit.file, fullNew);
+                applied.push({ file: srEdit.file, search: srEdit.search, replace: fullNew });
                 process.stdout.write(`\x1b[32m✓ ${srEdit.file} updated\x1b[0m\n`);
               } catch (err2) {
                 process.stdout.write(`\x1b[31m✗ Failed: ${err2.message}\x1b[0m\n`);
@@ -207,6 +240,30 @@ async function handleEdits(reply, ask) {
         }
       }
     }
+  }
+
+  return applied;
+}
+
+async function printEditSummary(applied, model) {
+  if (!applied.length || !model) return;
+  const parts = [];
+  for (const a of applied) {
+    const patch = structuredPatch(a.file, a.file, a.search, a.replace);
+    if (!patch.hunks.length) continue;
+    const hunksText = patch.hunks.map(h =>
+      `@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@\n${h.lines.join('\n')}`
+    ).join('\n');
+    parts.push(`File: ${a.file}\n${hunksText}`);
+  }
+  const prompt = `Summarize this code edit in 1 line: what changed, which functions/methods, +N/-N lines. Be specific about files and function names. Keep under 100 chars.
+
+${parts.join('\n---\n')}`;
+  try {
+    const summary = await runGenerate(prompt, model);
+    process.stdout.write(`\n\x1b[1;36m📝 Summary\x1b[0m  ${summary.trim()}\n`);
+  } catch {
+    // Silently skip — summary is non-critical
   }
 }
 
@@ -436,7 +493,7 @@ program
       const searchMatch  = trimmed.match(/\/search\s+"([^"]+)"/);
       const fileMatch    = trimmed.match(/\/file\s+"([^"]+)"/);
       const ctxMatch     = trimmed.match(/\/(?:ctx|context)\s+"([^"]+)"/);
-      const hasEditCmd   = /\b\/edit\b/.test(trimmed);
+      const hasEditCmd   = /(?:^|\s)\/edit\b/.test(trimmed);
       const hasSlashCmd  = !!(searchMatch || fileMatch || ctxMatch);
 
       // Strip slash commands from the prose question sent to the LLM
@@ -444,7 +501,7 @@ program
         .replace(/\/search\s+"[^"]+"/g, '')
         .replace(/\/file\s+"[^"]+"/g, '')
         .replace(/\/(?:ctx|context)\s+"[^"]+"/g, '')
-        .replace(/\b\/edit\b/gi, '')
+        .replace(/\/edit\b/gi, '')
         .replace(/\s+/g, ' ').trim();
 
       // /search command
@@ -536,6 +593,9 @@ program
       if (fileContent) parts.push(fileContent);
       if (webContent) parts.push(`[Web page content]\n${webContent}`);
       parts.push(`Question: ${question}`);
+      if (hasEditCmd) {
+        parts.push('Output each edit as: FILE_PATH\nSEARCH\n<old code>\nREPLACE\n<new code>. Do NOT use <<<<<<<, =======, >>>>>>>, or ``` markers.');
+      }
 
       applySlideWindow(messages);
       messages.push({ role: 'user', content: parts.join('\n\n') });
@@ -551,7 +611,11 @@ program
 
         // Edit detection — only on explicit /edit command
         if (hasEditCmd) {
-          await handleEdits(reply, ask);
+          const applied = await handleEdits(reply, ask, dir);
+          if (applied.length > 0) {
+            const summaryModel = compressModel || getModel();
+            await printEditSummary(applied, summaryModel);
+          }
         }
       } catch (err) {
         console.error(`\nError: ${err.message}`);

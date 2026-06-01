@@ -1,4 +1,7 @@
 import { readFile, writeFile } from 'fs/promises';
+import { createRequire } from 'module';
+const require = createRequire(import.meta.url);
+const { structuredPatch } = require('diff');
 
 function normalizePath(p) {
   return p.replace(/\\/g, '/').toLowerCase();
@@ -73,6 +76,21 @@ export function parseFullFileEdits(text, allFiles) {
     if (!rawPath || !content || seen.has(rawPath)) continue;
     const lines = content.split('\n');
     if (lines.length < 10) continue; // too small to be a full file
+    seen.add(rawPath);
+    const file = findFile(rawPath, allFiles);
+    if (file) edits.push({ file, content });
+  }
+
+  // Pattern 3: file path line immediately followed by a fenced code block
+  //   path/to/file.php
+  //   ```php
+  //   full file content
+  //   ```
+  const re3 = /^([^\n`]+\.\w+)\s*\n```(?:\w+)?\n([\s\S]*?)```/gm;
+  while ((match = re3.exec(text)) !== null) {
+    const rawPath = match[1].trim();
+    const content = match[2];
+    if (!rawPath || !content || seen.has(rawPath)) continue;
     seen.add(rawPath);
     const file = findFile(rawPath, allFiles);
     if (file) edits.push({ file, content });
@@ -224,12 +242,47 @@ export function parseSearchReplaceGitDiff(text, allFiles) {
   return edits;
 }
 
+// Parse conflict-marker format without <<<<<<<:
+//   FILE_PATH
+//   SEARCH
+//   old code
+//   =======
+//   new code
+//   >>>>>>> REPLACE
+export function parseSearchReplaceConflict(text, allFiles) {
+  const edits = [];
+  const seenPairs = new Set();
+
+  const re = /(?:^|\n)([^\n]+)\n\s*SEARCH\s*\n([\s\S]*?)\n\s*={3,}\s*\n([\s\S]*?)\n\s*>>>>>>> REPLACE/g;
+  let match;
+  while ((match = re.exec(text)) !== null) {
+    const rawPath = match[1].trim();
+    const search = match[2].trimEnd();
+    const replace = match[3].trimEnd();
+    if (!rawPath || !search) continue;
+
+    const file = findFile(rawPath, allFiles);
+    if (!file) continue;
+
+    const key = file + '::' + search.split('\n')[0]?.trim().substring(0, 60);
+    if (seenPairs.has(key)) continue;
+    seenPairs.add(key);
+
+    edits.push({ type: 'sr', file, search, replace });
+  }
+  return edits;
+}
+
 export function parseFileEdits(text, allFiles) {
   const edits = [];
 
   // Search/replace blocks take priority
   const sr = parseSearchReplace(text, allFiles);
   edits.push(...sr.map(e => ({ ...e, type: 'sr' })));
+
+  // SEARCH ... ======= ... >>>>>>> REPLACE format
+  const conflict = parseSearchReplaceConflict(text, allFiles);
+  edits.push(...conflict);
 
   // Fenced ```search / ```replace pairs
   const fenced = parseSearchReplaceFenced(text, allFiles);
@@ -279,28 +332,42 @@ export function formatDiff(oldContent, newContent, filePath) {
 
 export function formatSearchReplaceDiff(file, search, replace, fileContent) {
   if (fileContent && fileContent.includes(search)) {
-    const lines = fileContent.split('\n');
-    const searchLines = search.split('\n');
-    const li = lines.findIndex(l => l.includes(searchLines[0].trim()));
-    if (li >= 0) {
-      const start = Math.max(0, li - 2);
-      const end = Math.min(lines.length, li + searchLines.length + 2);
-      const out = [`\x1b[1m${file}\x1b[0m — L${li + 1}–L${li + searchLines.length}`];
-      for (let i = start; i < end; i++) {
-        const ln = String(i + 1).padStart(4);
-        if (i >= li && i < li + searchLines.length) {
-          out.push(` \x1b[31m-${ln}│ ${lines[i]}\x1b[0m`);
-        } else {
-          out.push(` \x1b[90m ${ln}│ ${lines[i]}\x1b[0m`);
+    const patch = structuredPatch(file, file, search, replace);
+    if (!patch.hunks.length) return null;
+
+    const contentLines = fileContent.split('\n');
+    const searchFirst = search.split('\n')[0].trim();
+    const li = contentLines.findIndex(l => l.includes(searchFirst));
+    if (li < 0) {
+      return `\x1b[1m${file}\x1b[0m — search/replace\n` +
+        `\x1b[31m- ${search.split('\n')[0]}${search.includes('\n') ? ' …' : ''}\x1b[0m\n` +
+        `\x1b[32m+ ${replace.split('\n')[0]}${replace.includes('\n') ? ' …' : ''}\x1b[0m`;
+    }
+
+    const out = [];
+    for (const hunk of patch.hunks) {
+      let oldLine = hunk.oldStart;
+      let newLine = hunk.newStart;
+      const absStart = li + hunk.oldStart;
+      const absEnd = li + hunk.oldStart + hunk.oldLines - 1;
+      out.push(`\x1b[1m${file}\x1b[0m — L${absStart}–L${absEnd}`);
+
+      for (const line of hunk.lines) {
+        const prefix = line[0];
+        const text = line.slice(1);
+        if (prefix === ' ') {
+          out.push(` \x1b[90m${String(li + oldLine).padStart(4)}│ ${text}\x1b[0m`);
+          oldLine++; newLine++;
+        } else if (prefix === '-') {
+          out.push(` \x1b[31m-${String(li + oldLine).padStart(4)}│ ${text}\x1b[0m`);
+          oldLine++;
+        } else if (prefix === '+') {
+          out.push(` \x1b[32m+${String(li + newLine).padStart(4)}│ ${text}\x1b[0m`);
+          newLine++;
         }
       }
-      const rlines = replace.split('\n');
-      for (let i = 0; i < rlines.length; i++) {
-        const ln = String(li + 1 + i).padStart(4);
-        out.push(` \x1b[32m+${ln}│ ${rlines[i]}\x1b[0m`);
-      }
-      return out.join('\n');
     }
+    return out.join('\n');
   }
   return `\x1b[1m${file}\x1b[0m — search/replace\n` +
     `\x1b[31m- ${search.split('\n')[0]}${search.includes('\n') ? ' …' : ''}\x1b[0m\n` +
