@@ -308,10 +308,15 @@ program
     }
 
     class BracketedPasteTransform extends Transform {
-      constructor() {
+      constructor(stdin) {
         super();
+        this._stdin = stdin;
         this._buf = '';
         this._in = false;
+        this.isTTY = true;
+      }
+      setRawMode(mode) {
+        if (this._stdin.setRawMode) this._stdin.setRawMode(mode);
       }
       _transform(chunk, _, cb) {
         this._buf += chunk.toString();
@@ -351,7 +356,7 @@ program
     }
 
     const inputSrc = process.stdin.isTTY
-      ? process.stdin.pipe(new BracketedPasteTransform())
+      ? process.stdin.pipe(new BracketedPasteTransform(process.stdin))
       : process.stdin;
 
     const rl = createInterface({ input: inputSrc, output: process.stdout });
