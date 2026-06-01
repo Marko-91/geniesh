@@ -2,15 +2,15 @@
 
 import { Command } from 'commander';
 import { createInterface } from 'readline';
-import { basename, join } from 'path';
+import { resolve } from 'path';
+import { join } from 'path';
 import { createRequire } from 'module';
 import { readFile } from './fs-utils.js';
-import { writeFile } from 'fs/promises';
+import { writeFile, appendFile } from 'fs/promises';
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 import { extractFunction } from './extractor.js';
 import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './indexer.js';
-import { tryLoadGraph, graphExists, loadGraph } from './relations.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt, SYSTEM_RULES } from './prompt.js';
 import { runQuery, runChat, runGenerate, setModel } from './runner.js';
@@ -22,23 +22,234 @@ import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { extractUrls, fetchWebContent } from './web-fetch.js';
 import { webSearch, formatSearchResults } from './web-search.js';
 import { buildChatContext, applySlideWindow } from './context-builder.js';
-import { extractSymbols } from './symbol-utils.js';
-import { scanDir, extractFileRefs } from './fs-utils.js';
-import { profileProject } from './profiler.js';
-import { lazyBuildContext, clearLazyCache } from './lazy-indexer.js';
-import { loadDefaultLanguages, getLanguages } from './languages/index.js';
 import { parseFileEdits, formatDiff, formatSearchReplaceDiff, applySearchReplace, applyFullFileEdit } from './diff-apply.js';
-import { parseShellCommands, runShellCommand, formatCommandResult } from './terminal-agent.js';
-import { execSync } from 'child_process';
+import { parseShellCommands, runShellCommand } from './terminal-agent.js';
+import { execSync, spawnSync } from 'child_process';
 import ora from 'ora';
 
+// ---------------------------------------------------------------------------
+// genx integration
+// ---------------------------------------------------------------------------
+
+const GENX_BIN = process.env.GENX_BIN || 'python3';
+const GENX_SCRIPT = process.env.GENX_SCRIPT
+  || join(process.env.HOME || '~', 'projects', 'mapx', 'genx', 'main.py');
+const GENX_HISTORY = process.env.GENX_HISTORY
+  || join(process.env.HOME || '~', '.genx_history.md');
+
+/**
+ * Run genx and return the full context markdown string (stdout).
+ */
+async function runGenx(query, task, root, { compressModel } = {}) {
+  const args = [GENX_SCRIPT, query, '--root', root];
+  if (task) { args.push('--task', task); }
+  if (compressModel) { args.push('--compress-model', compressModel); }
+
+  const result = spawnSync(GENX_BIN, args, {
+    encoding: 'utf-8',
+    timeout: 120_000,
+    maxBuffer: 20 * 1024 * 1024,
+    cwd: root,
+  });
+
+  if (result.error) throw new Error(`genx failed: ${result.error.message}`);
+  if (result.status !== 0) throw new Error(`genx exited ${result.status}: ${(result.stderr || '').slice(0, 400)}`);
+  return result.stdout || '';
+}
+
+/**
+ * Append a web-search entry to the shared genx history file.
+ */
+async function appendWebHistory(query, results, fetchedContent) {
+  const ts = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
+  const snippetBlock = results
+    .map(r => `### ${r.url}\n> ${r.snippet || r.title || '(no snippet)'}`)
+    .join('\n\n');
+  const contentBlock = fetchedContent
+    ? '\n\n**Fetched content** (truncated to 2000 chars):\n\n' +
+      fetchedContent.slice(0, 2000) + (fetchedContent.length > 2000 ? '\n... (truncated)' : '')
+    : '';
+  const entry = `\n---\n## [WEB: ${ts}] duckduckgo: "${query}"\n\n` +
+    `**Fetched**: ${ts}\n` +
+    `**Results**: ${results.map(r => r.url).join(', ')}\n\n` +
+    snippetBlock + contentBlock + '\n';
+  try { await appendFile(GENX_HISTORY, entry, 'utf-8'); } catch { /* non-fatal */ }
+}
+
+/**
+ * Handle REQUERY / REQUERY_INTERNET / bash signals in the latest LLM reply.
+ * Mutates messages[], calls runChat(), returns final reply.
+ */
+async function handleSignals(reply, messages, root, ask, { maxIter = 3, compressModel = '' } = {}) {
+  let current = reply;
+  for (let i = 0; i < maxIter; i++) {
+    // REQUERY
+    const rq = current.match(/^REQUERY\s+(.+)$/m);
+    if (rq) {
+      const symbols = rq[1].trim();
+      process.stderr.write(`\x1b[33m[geniesh] ↺ REQUERY: ${symbols} — fetching context…\x1b[0m\n`);
+      let extra = '';
+      try { extra = await runGenx(symbols, '', root, { compressModel }); }
+      catch (err) { process.stderr.write(`\x1b[31m[geniesh] REQUERY failed: ${err.message}\x1b[0m\n`); break; }
+      messages.push({ role: 'user', content: `[Context update for: ${symbols}]\n\n${extra}\n\nContinue your response using this additional context.` });
+      process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
+      current = await runChat(messages);
+      messages.push({ role: 'assistant', content: current });
+      continue;
+    }
+
+    // REQUERY_INTERNET
+    const ri = current.match(/^REQUERY_INTERNET\s+(.+)$/m);
+    if (ri) {
+      const q = ri[1].trim();
+      process.stderr.write(`\x1b[33m[geniesh] ↺ REQUERY_INTERNET: "${q}" — searching…\x1b[0m\n`);
+      let webBlock = '';
+      try {
+        const results = await webSearch(q, 3);
+        let fetched = '';
+        if (results.length > 0) {
+          const pages = await Promise.allSettled(results.slice(0, 2).map(r => fetchWebContent(r.url)));
+          fetched = pages.filter(p => p.status === 'fulfilled').map(p => p.value).join('\n\n---\n\n');
+          await appendWebHistory(q, results, fetched);
+        }
+        webBlock = `[Web page content]\nSearch: "${q}"\n\n` +
+          formatSearchResults(results) +
+          (fetched ? `\n\n--- Fetched pages ---\n${fetched}` : '');
+      } catch (err) { webBlock = `[Web search failed: ${err.message}]`; }
+      messages.push({ role: 'user', content: webBlock + '\n\nContinue your response using this web content.' });
+      process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
+      current = await runChat(messages);
+      messages.push({ role: 'assistant', content: current });
+      continue;
+    }
+
+    // bash blocks
+    const commands = parseShellCommands(current);
+    let anyRan = false;
+    for (const cmd of commands) {
+      process.stdout.write(`\n\x1b[90m$ ${cmd}\x1b[0m\n`);
+      const ans = await ask(`Run this command? [\x1b[1mY\x1b[0m/n] `);
+      if (!ans || ans.toLowerCase().startsWith('y') || ans === '') {
+        const res = runShellCommand(cmd);
+        process.stdout.write(`\x1b[90m${res.output.slice(0, 2000)}${res.output.length > 2000 ? '\n... (truncated)' : ''}\x1b[0m\n`);
+        process.stdout.write(`\x1b[90m  → exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
+        messages.push({ role: 'user', content: `Command executed:\n\`\`\`\n$ ${cmd}\n${res.output}\n\`\`\`\nExit code: ${res.exitCode}\n\nContinue with the next step.` });
+        process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
+        current = await runChat(messages);
+        messages.push({ role: 'assistant', content: current });
+        anyRan = true;
+      } else {
+        process.stdout.write(`\x1b[33mSkipped\x1b[0m\n`);
+      }
+    }
+    if (anyRan) continue;
+    break;
+  }
+  return current;
+}
+
+// ---------------------------------------------------------------------------
+// Edit detection (unchanged logic from prior cli.js)
+// ---------------------------------------------------------------------------
+
+async function handleEdits(reply, ask) {
+  const { scanDir } = await import('./fs-utils.js');
+  let allFiles = [];
+  try { allFiles = await scanDir(process.cwd()); } catch { /* non-fatal */ }
+
+  const edits = parseFileEdits(reply, allFiles);
+  let lastEditError = null;
+
+  for (const edit of edits) {
+    let diff, apply, originalContent;
+    if (edit.type === 'sr') {
+      originalContent = await readFile(edit.file).catch(() => '');
+      diff = formatSearchReplaceDiff(edit.file, edit.search, edit.replace);
+      apply = () => applySearchReplace(edit.file, edit.search, edit.replace);
+    } else {
+      originalContent = await readFile(edit.file).catch(() => '');
+      diff = formatDiff(originalContent, edit.content, edit.file);
+      apply = () => applyFullFileEdit(edit.file, edit.content);
+    }
+    if (!diff) continue;
+    process.stdout.write(`\n${diff}\n`);
+    const ans = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
+    if (!ans || ans.toLowerCase().startsWith('y') || ans === '') {
+      try {
+        await apply();
+        if (/\.(js|mjs|cjs)$/i.test(edit.file)) {
+          try {
+            execSync(`node --check "${edit.file}"`, { stdio: 'pipe', timeout: 10000 });
+            process.stdout.write(`\x1b[32m✓ ${edit.file} updated (syntax OK)\x1b[0m\n`);
+          } catch (synErr) {
+            if (originalContent) await writeFile(edit.file, originalContent, 'utf-8');
+            process.stdout.write(`\x1b[31m✗ ${edit.file} syntax check FAILED — reverted\x1b[0m\n`);
+            process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
+            lastEditError = new Error(`Syntax check failed for ${edit.file}`);
+          }
+        } else {
+          process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
+        }
+      } catch (err) {
+        process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
+        lastEditError = err;
+      }
+    } else {
+      process.stdout.write(`\x1b[33mSkipped ${edit.file}\x1b[0m\n`);
+    }
+  }
+
+  // Function-level fallback when SEARCH text not found
+  if (lastEditError && lastEditError.message.includes('not found')) {
+    const srEdit = edits.find(e => e.type === 'sr');
+    if (srEdit) {
+      const old = await readFile(srEdit.file).catch(() => '');
+      if (old) {
+        const fm = (srEdit.search + srEdit.replace).match(/function\s+(\w+)\s*\(/);
+        if (fm) {
+          const funcName = fm[1];
+          const lines = old.split('\n');
+          const re = new RegExp(`function\\s+${funcName}\\s*\\([^)]*\\)`);
+          let si = lines.findIndex(l => re.test(l));
+          if (si >= 0) {
+            let depth = 0, ei = si, started = false;
+            for (let i = si; i < lines.length && i < si + 300; i++) {
+              for (const ch of lines[i]) {
+                if (ch === '{') { depth++; started = true; }
+                if (ch === '}') depth--;
+              }
+              if (started && depth <= 0 && i > si) { ei = i; break; }
+            }
+            const head = lines.slice(0, si).join('\n');
+            const tail = lines.slice(ei + 1).join('\n');
+            const fullNew = (head ? head + '\n' : '') + srEdit.replace + (tail ? '\n' + tail : '');
+            process.stdout.write(`\n\x1b[33mSEARCH text not found — retrying by function \x1b[1m${funcName}\x1b[0m:\x1b[0m\n`);
+            const ans2 = await ask(`Replace function \x1b[1m${funcName}\x1b[0m in ${srEdit.file}? [\x1b[1mY\x1b[0m/n] `);
+            if (!ans2 || ans2.toLowerCase() === 'y' || ans2 === '') {
+              try {
+                await writeFile(srEdit.file, fullNew);
+                process.stdout.write(`\x1b[32m✓ ${srEdit.file} updated\x1b[0m\n`);
+              } catch (err2) {
+                process.stdout.write(`\x1b[31m✗ Failed: ${err2.message}\x1b[0m\n`);
+              }
+            } else { process.stdout.write(`\x1b[33mSkipped\x1b[0m\n`); }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Commander setup
+// ---------------------------------------------------------------------------
+
 const program = new Command();
-const icons = ['⏳', '🤔', '🧠', '🔮'];
 await checkOllamaHealth();
 
 program
   .name('geniesh')
-  .description('Local AI developer assistant — BFS relation-graph + RAG (powered by Ollama)')
+  .description('Local AI developer assistant — genx context pipeline + Ollama')
   .version(version)
   .enablePositionalOptions()
   .option('--model <name>', 'Ollama model to use', 'qwen3-coder')
@@ -49,832 +260,247 @@ program
     if (embedder) setEmbedder(embedder);
   });
 
-// ─── ai index --dir <path> ───────────────────────────────────────────────────
+// ─── index ───────────────────────────────────────────────────────────────────
 
 program
   .command('index')
-  .description('Build a RAG index for a directory or single file')
+  .description('Build a RAG index for a directory or single file (used by --full-index)')
   .option('--dir <path>', 'Directory to scan and index')
   .option('--file <path>', 'Single file to index')
   .action(async (opts) => {
     try {
-      if (opts.file) {
-        // Index single file
-        await buildIndexFromFileList(opts.file);
-      } else if (opts.dir) {
-        // Index directory
-        await buildIndex(opts.dir);
-      } else {
-        throw new Error('Either --dir or --file must be specified');
-      }
-    } catch (err) {
-      console.error(`\nError: ${err.message}`);
-      process.exit(1);
-    }
+      if (opts.file) { await buildIndexFromFileList(opts.file); }
+      else if (opts.dir) { await buildIndex(opts.dir); }
+      else { throw new Error('Either --dir or --file must be specified'); }
+    } catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
   });
 
-// ─── ai chat ─────────────────────────────────────────────────────────────────
+// ─── chat ─────────────────────────────────────────────────────────────────────
 
 program
   .command('chat')
-  .description('Start an intelligent chat session with auto-indexing and AST graph traversal')
-  .option('--dir <path>', 'Directory to use for indexing/search (default: cwd)')
-  .option('--files <paths...>', 'Explicit files to use as context (skips auto-index)')
-  .option('--dirs <paths...>', 'Explicit directories to scan as context (skips auto-index)')
-  .option('--budget <chars>', 'Context budget in characters (default: 128000)', parseInt)
-  .option('--full-index', 'Use full pre-indexing (old behaviour) instead of lazy mode')
+  .description('Interactive coding chat powered by genx context pipeline')
+  .option('--dir <path>', 'Project root passed to genx (default: cwd)')
+  .option('--full-index', 'Pre-build RAG index for vague-query symbol discovery')
+  .option('--compress-model <name>', 'Ollama model for genx history compression (e.g. llama3:latest)')
   .action(async (opts) => {
-    const dir = opts.dir || process.cwd();
+    const dir = resolve(opts.dir || process.cwd());
+    const compressModel = opts.compressModel || '';
 
-    let index = [];
-    let graph;
-    let allFiles;
-    const hasExplicit = (opts.files && opts.files.length > 0) || (opts.dirs && opts.dirs.length > 0);
-
-    if (hasExplicit) {
-      let explicitFiles = [...(opts.files || [])];
-      for (const d of (opts.dirs || [])) {
-        const scanned = await scanDir(d);
-        explicitFiles = explicitFiles.concat(scanned);
-      }
-      explicitFiles = [...new Set(explicitFiles)];
-      console.log(`\n📎  Explicit context: ${explicitFiles.length} file(s)\n`);
-      index = await buildIndexFromFileList(explicitFiles);
-      allFiles = explicitFiles;
-    } else if (opts.fullIndex) {
-      if (await indexExists() && await graphExists()) {
-        const loadSpinner = ora('Loading index + graph…').start();
-        index = await loadIndex();
-        graph = await loadGraph();
-        loadSpinner.succeed(`Index: ${index.length} chunks · Graph: ${graph.nodes.size} nodes, ${graph.edges.length} edges`);
-        allFiles = await scanDir(dir);
-      } else {
-        console.log(`\n⚠️  No index found. Building index + graph for ${dir}…\n`);
-        index = await buildIndex(dir);
-        graph = await loadGraph();
-        allFiles = await scanDir(dir);
-      }
-    } else {
-      const lazySpinner = ora('Loading language modules…').start();
-      await loadDefaultLanguages();
-      lazySpinner.succeed(`Languages: ${getLanguages().map(l => l.id).join(', ')}`);
-
-      const profileSpinner = ora('Profiling project…').start();
-      const profile = await profileProject(dir);
-      if (profile.languages.length > 0) {
-        profileSpinner.succeed(`Project: ${profile.languages.map(l => `${l.id} ${l.percentage}%`).join(' · ')} | ${profile.fileCount} files | ${profile.keyFiles.length} key files`);
-      } else {
-        profileSpinner.succeed(`Project: ${profile.fileCount} files, ${profile.keyFiles.length} key files`);
-      }
-      const scanSpinner = ora('Scanning project files…').start();
-      allFiles = await scanDir(dir);
-      scanSpinner.succeed(`Found ${allFiles.length} files`);
-      // Store profile on global opts for the chat loop
-      opts._profile = profile;
-      opts._lazyMode = true;
+    // RAG index for vague-query symbol discovery.
+    // --full-index: load/build synchronously before first prompt.
+    // default: silently load an existing index if present — no build, no output.
+    //          Run `geniesh index --dir .` to build/refresh the index.
+    let ragIndex = null;
+    let ragIndexPromise = null;
+    if (opts.fullIndex) {
+      const s = ora(await indexExists() ? 'Loading RAG index…' : `Building RAG index for ${dir}…`).start();
+      ragIndex = await indexExists() ? await loadIndex() : await buildIndex(dir);
+      s.succeed(`RAG index: ${ragIndex.length} chunks`);
+    } else if (await indexExists()) {
+      // Load silently in background — no spinner, no blocking output
+      ragIndexPromise = loadIndex().catch(() => null);
     }
 
-    // ─ 3. Lamp info (genie's environment) ─────────────────────────────────
+    // OS info
     const os = await import('os');
-    const arch = os.arch(); // x64, arm64, etc.
-    const platform = os.platform(); // linux, darwin, win32
-    let lampInfo = `${platform} (${arch})`;
+    let lampInfo = `${os.platform()} (${os.arch()})`;
     try {
-      if (platform === 'linux') {
-        const osRelease = await readFile('/etc/os-release', 'utf-8');
-        const name = (osRelease.match(/^PRETTY_NAME="(.+)"$/m) || osRelease.match(/^PRETTY_NAME=(.+)$/m))?.[1] || 'Linux';
-        lampInfo = `${name} (${arch})`;
-      } else if (platform === 'darwin') {
-        const swVers = await readFile('/System/Library/CoreServices/SystemVersion.plist', 'utf-8').catch(() => '');
-        const ver = swVers.match(/<key>ProductVersion<\/key>\s*<string>([^<]+)<\/string>/)?.[1] || os.release();
-        lampInfo = `macOS ${ver} (${arch})`;
-      } else if (platform === 'win32') {
-        lampInfo = `Windows (${arch})`;
+      if (os.platform() === 'darwin') {
+        const sw = await readFile('/System/Library/CoreServices/SystemVersion.plist', 'utf-8').catch(() => '');
+        const ver = sw.match(/<key>ProductVersion<\/key>\s*<string>([^<]+)<\/string>/)?.[1] || os.release();
+        lampInfo = `macOS ${ver} (${os.arch()})`;
+      } else if (os.platform() === 'linux') {
+        const rel = await readFile('/etc/os-release', 'utf-8').catch(() => '');
+        const name = (rel.match(/^PRETTY_NAME="(.+)"$/m) || rel.match(/^PRETTY_NAME=(.+)$/m))?.[1] || 'Linux';
+        lampInfo = `${name} (${os.arch()})`;
       }
     } catch {}
 
-    // ─ 4. System prompt ───────────────────────────────────────────────────────
-    const messages = [
-      {
-        role: 'system',
-        content: `You are running on: ${lampInfo}\n\n` + SYSTEM_RULES + (
-          '\n\nTips: NEVER say you "cannot" make changes. When asked to make changes,\n' +
-          'output edit blocks — they will be parsed and applied automatically.\n' +
-          'After running a command you will see its output and can continue.\n' +
-          'Be concise and practical.'
-        ),
-      },
-    ];
+    const modelName = program.opts().model || 'qwen3-coder';
+    const messages = [{
+      role: 'system',
+      content:
+        `You are running on: ${lampInfo}\nModel: ${modelName}\n\n` +
+        SYSTEM_RULES +
+        '\n\nTips: NEVER say you "cannot" make changes. Output edit blocks — they will be applied automatically.\n' +
+        'After running a command you will see its output and can continue.\nBe concise and practical.',
+    }];
 
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ask = (q) => new Promise((resolve) => rl.question(q, resolve));
+    const ask = (q) => new Promise((res) => rl.question(q, res));
 
     console.log('\n────────────────────────────────────────────────────────────');
-    console.log('🧠  AI Chat  —  type \x1b[33mexit\x1b[0m or Ctrl+C to quit');
-    if (hasExplicit) {
-      console.log(`📎  Context   : ${allFiles.length} explicit file(s)`);
-    } else {
-      console.log(`📂  Directory : ${dir}`);
-    }
-    console.log(`🧩  Model     : ${program.opts().model || 'qwen3-coder'}`);
-    console.log(`🔤  Embedder  : ${program.opts().embedder || 'nomic-embed-text'}`);
-    if (lampInfo) console.log(`🏺  Lamp      : ${lampInfo}`);
-    console.log(`📚  Index     : ${index.length} chunks`);
-    if (graph) console.log(`🔗  Graph     : ${graph.nodes.size} nodes · ${graph.edges.length} edges · ${graph.communityCount} communities`);
+    console.log('🧞  geniesh  —  type \x1b[33mexit\x1b[0m or Ctrl+C to quit');
+    console.log(`📂  Root      : ${dir}`);
+    console.log(`🧩  Model     : ${modelName}`);
+    if (ragIndex) console.log(`📚  RAG index : ${ragIndex.length} chunks (symbol discovery active)`);
+    else if (ragIndexPromise) console.log(`📚  RAG index : loading…`);
+    else console.log(`📚  RAG index : not built  (run: geniesh index --dir ${dir})`);
     console.log('────────────────────────────────────────────────────────────\n');
-
     console.log('\x1b[90m💡 Tips\x1b[0m');
-    console.log('\x1b[90m   • Mention a file path to load it as full context:  "look at lib/application.js"\x1b[0m');
-    console.log('\x1b[90m   • Ask about specific symbols:                      "how does Router.handle work?"\x1b[0m');
-    console.log('\x1b[90m   • Use concrete function/method names for AST graph\x1b[0m');
-    if (graph) console.log('\x1b[90m   • Budget is ~32k tok default (--budget <chars> to override)\x1b[0m');
-    console.log('\x1b[90m   • Paste a URL to fetch its content as context\x1b[0m');
-    console.log('\x1b[90m   • /search <query> to search the web via DuckDuckGo\x1b[0m');
-    console.log('\x1b[90m   • Ask for code changes — LLM proposes edits, you confirm\x1b[0m');
-    console.log('\x1b[90m   • Ask to run commands — LLM writes them, you approve\x1b[0m');
-    console.log('\x1b[90m   • Type \x1b[33mexit\x1b[90m or Ctrl+C to quit\x1b[0m\n');
+    console.log('\x1b[90m Commands:\x1b[0m');
+    console.log('\x1b[90m   /search "query"             Search DuckDuckGo + fetch top pages\x1b[0m');
+    console.log('\x1b[90m   /file path/to/file ...      Load full file(s) into context\x1b[0m');
+    console.log('\x1b[90m   /ctx symbol1 symbol2 ...    Run genx with exactly these symbols\x1b[0m');
+    console.log('\x1b[90m   https://...                 Paste a URL — page is fetched automatically\x1b[0m');
+    console.log('\x1b[90m   exit  or  Ctrl+C            Quit\x1b[0m');
+    console.log('');
+    console.log('\x1b[90m Asking questions:\x1b[0m');
+    console.log('\x1b[90m   • Symbol names work best:   "how does fullReIndex work?"\x1b[0m');
+    console.log('\x1b[90m   • Prose queries also work:  "explain the reindexing flow"\x1b[0m');
+    console.log('\x1b[90m   • Ask to edit code:         "add error handling to saveIndex in indexer.js"\x1b[0m');
+    console.log('\x1b[90m   • Ask to run commands:      "run the tests and show me failures"\x1b[0m');
+    console.log('');
+    console.log('\x1b[90m How the LLM gets more context:\x1b[0m');
+    console.log('\x1b[90m   • REQUERY <symbols>         LLM asks for deeper code context automatically\x1b[0m');
+    console.log('\x1b[90m   • REQUERY_INTERNET <query>  LLM searches the web for external docs\x1b[0m');
+    console.log('\x1b[90m   • ```bash blocks            LLM runs commands — you approve each one\x1b[0m');
+    console.log('\x1b[90m   • Edits shown as diffs — you approve before they are applied\x1b[0m\n');
 
-    process.on('SIGINT', () => {
-      console.log('\nBye!');
-      rl.close();
-      process.exit(0);
-    });
-
-    // Track last fetched web content so it persists across turns
-    let lastWebContent = '';
+    process.on('SIGINT', () => { console.log('\nBye!'); rl.close(); process.exit(0); });
 
     while (true) {
       let userInput;
-      try {
-        userInput = await ask('\x1b[32mYou\x1b[0m: ');
-      } catch {
-        break;
-      }
-
+      try { userInput = await ask('\x1b[32mYou\x1b[0m: '); } catch { break; }
       const trimmed = userInput.trim();
-      if (!trimmed || trimmed.toLowerCase() === 'exit') {
-        rl.close();
-        console.log('Bye!');
-        break;
-      }
+      if (!trimmed || trimmed.toLowerCase() === 'exit') { rl.close(); console.log('Bye!'); break; }
 
-      // ─ /search command ──────────────────────────────────────────────────────────
-      let searchResultsText = '';
-      let searchFollowUp = '';
-      const searchMatch = trimmed.match(/^\/search\s+(.+)/s);
+      // Parse all slash commands from anywhere in the message.
+      // /search, /file, /ctx may appear at the start or embedded mid-sentence.
+      const searchMatch = trimmed.match(/\/search\s+"([^"]+)"|\/search\s+(\S+)/);
+      const fileMatch   = trimmed.match(/\/file\s+(.+?)(?=\s*\/\w|\s*$)/s);
+      const ctxMatch    = trimmed.match(/\/ctx\s+"([^"]+)"|\/ctx\s+(\S.*?)(?=\s*\/\w|\s*$)/s);
+      const hasSlashCmd = !!(searchMatch || fileMatch || ctxMatch);
+
+      // Strip slash commands from the prose question sent to the LLM
+      let questionText = trimmed
+        .replace(/\/search\s+"[^"]+"|\/search\s+\S+/g, '')
+        .replace(/\/file\s+.+?(?=\s*\/\w|$)/gs, '')
+        .replace(/\/ctx\s+"[^"]+"|\/ctx\s+\S.*?(?=\s*\/\w|$)/gs, '')
+        .replace(/\s+/g, ' ').trim();
+
+      // /search command
+      let manualWebContent = '';
       if (searchMatch) {
-        const rest = searchMatch[1].trim();
-        // Support: /search "query" optional follow-up question
-        const quoted = rest.match(/^"([^"]+)"\s*(.*)/s);
-        const query = quoted ? quoted[1] : rest;
-        searchFollowUp = quoted ? quoted[2].trim() : '';
-        const searchSpinner = ora({ text: `Searching "${query}"…`, color: 'yellow' }).start();
+        const sq = (searchMatch[1] || searchMatch[2]).trim();
+        const ss = ora({ text: `Searching "${sq}"…`, color: 'yellow' }).start();
         try {
-          const results = await webSearch(query, 5);
-          if (results.length === 0) {
-            searchSpinner.fail('No search results');
-          } else {
-            searchSpinner.succeed(`Found ${results.length} results for "${query}"`);
-            searchResultsText = formatSearchResults(results);
-            // Fetch the top 2 result pages
-            const topUrls = results.slice(0, 2).map(r => r.url);
-            const fetchSpinner = ora({ text: `Fetching ${topUrls.length} result page(s)…`, color: 'yellow' }).start();
-            const fetchResults = await Promise.allSettled(topUrls.map(url => fetchWebContent(url)));
-            const fetchParts = [];
-            for (let i = 0; i < topUrls.length; i++) {
-              const r = fetchResults[i];
-              if (r.status === 'fulfilled') {
-                fetchParts.push(r.value);
-              }
-            }
-            if (fetchParts.length > 0) {
-              fetchSpinner.succeed(`Fetched ${fetchParts.length} page(s)`);
-              searchResultsText += '\n\n--- Fetched pages ---\n' + fetchParts.join('\n\n---\n\n');
-            } else {
-              fetchSpinner.info('No pages fetched');
-            }
-            lastWebContent = searchResultsText;
+          const results = await webSearch(sq, 5);
+          if (results.length === 0) { ss.fail('No search results'); }
+          else {
+            ss.succeed(`Found ${results.length} results`);
+            const fs2 = ora({ text: 'Fetching pages…', color: 'yellow' }).start();
+            const pages = await Promise.allSettled(results.slice(0, 2).map(r => fetchWebContent(r.url)));
+            const parts = pages.filter(p => p.status === 'fulfilled').map(p => p.value);
+            fs2[parts.length ? 'succeed' : 'info'](`Fetched ${parts.length} page(s)`);
+            const fetched = parts.join('\n\n---\n\n');
+            await appendWebHistory(sq, results, fetched);
+            manualWebContent = formatSearchResults(results) + (fetched ? `\n\n--- Fetched pages ---\n${fetched}` : '');
           }
-        } catch (err) {
-          searchSpinner.fail(`Search failed: ${err.message}`);
+        } catch (err) { ss.fail(`Search failed: ${err.message}`); }
+      }
+      // URL fetch (skip when /search already ran)
+      let urlWebContent = '';
+      if (!searchMatch) {
+        const urls = extractUrls(trimmed);
+        if (urls.length > 0) {
+          const ws = ora({ text: `Fetching ${urls.length} URL(s)…`, color: 'yellow' }).start();
+          const pages = await Promise.allSettled(urls.map(u => fetchWebContent(u)));
+          const parts = pages.filter(p => p.status === 'fulfilled').map(p => p.value);
+          ws.succeed(`Fetched ${(parts.reduce((s, p) => s + p.length, 0) / 1000).toFixed(1)}k`);
+          urlWebContent = parts.join('\n\n---\n\n');
         }
       }
+      const webContent = manualWebContent || urlWebContent;
 
-      // ─ Web fetch ──────────────────────────────────────────────────────────────
-      let webContent = '';
-      const urls = extractUrls(trimmed);
-      if (urls.length > 0) {
-        const wfSpinner = ora({ text: `Fetching ${urls.length} URL(s)…`, color: 'yellow' }).start();
-        const results = await Promise.allSettled(urls.map(url => fetchWebContent(url)));
+      // /file command — paths from pre-parsed fileMatch above
+      let fileContent = '';
+      if (fileMatch) {
+        const paths = (fileMatch[1] || '').trim().split(/\s+/);
         const parts = [];
-        for (let i = 0; i < urls.length; i++) {
-          const r = results[i];
-          if (r.status === 'fulfilled') {
-            parts.push(r.value);
-            wfSpinner.text = `Fetched ${(r.value.length / 1000).toFixed(1)}k from ${urls[i]}`;
+        for (const p of paths) {
+          const absPath = p.startsWith('/') ? p : join(dir, p);
+          const content = await readFile(absPath).catch(() => null);
+          if (content) {
+            parts.push(`// file-ref: ${p}\n${content}`);
+            process.stderr.write(`\x1b[90m[geniesh] loaded ${p} (${Math.round(content.length / 4).toLocaleString()} tok)\x1b[0m\n`);
           } else {
-            wfSpinner.text = `Failed: ${urls[i]} (${r.reason.message})`;
+            process.stderr.write(`\x1b[31m[geniesh] could not read ${p}\x1b[0m\n`);
           }
         }
-        const totalKb = (parts.reduce((s, p) => s + p.length, 0) / 1000).toFixed(1);
-        wfSpinner.succeed(`Fetched ${totalKb}k from ${urls.length} URL(s)`);
-        if (parts.length > 0) {
-          webContent = parts.join('\n\n---\n\n');
-          lastWebContent = webContent;
-        }
-      } else if (searchResultsText) {
-        webContent = searchResultsText;
-      } else if (lastWebContent) {
-        webContent = lastWebContent;
-        const kb = (lastWebContent.length / 1000).toFixed(1);
-        process.stderr.write(`\x1b[90m(using ${kb}k from previous fetch)\x1b[0m\n`);
+        fileContent = parts.join('\n\n');
       }
 
-      // ─ Build context ─────────────────────────────────────────────────────────
-      const symbols = extractSymbols(trimmed);
-      let fileRefs = extractFileRefs(trimmed, allFiles);
-
-      // Auto-detect edit intent: find <file.ext> near an edit verb in the question
-      const hasEditVerb = /\b(?:edit|change|modify|add|update|fix|remove|delete|append|prepend|insert)\b/i.test(trimmed);
-      let editMatch = null;
-      if (hasEditVerb) {
-        // Pattern 1: "edit <anything> file.ext"
-        let m = trimmed.match(/(?:edit|change|modify|add|update|fix|remove|delete|append|prepend|insert)\s.*?([^\s,;]+\.\w+)/i);
-        if (m) { editMatch = m; }
-        // Pattern 2: "in file.ext edit" — match file BEFORE the verb
-        if (!editMatch) {
-          m = trimmed.match(/(?:in|of|for|from)\s+([^\s,;]+\.\w+)\b/i);
-          if (m) { editMatch = m; }
-        }
-        // Pattern 3: fall back to fileRefs if we found a .js/.ts file
-        if (!editMatch) {
-          const ref = fileRefs.find(f => /\.(js|ts|jsx|tsx|mjs|cjs)$/i.test(f));
-          if (ref) {
-            const cn = ref.replace(/\\/g, '/').split('/').slice(-1)[0].toLowerCase();
-            editMatch = { 1: cn };
-          }
+      // Materialise background RAG index if it finished
+      if (!ragIndex && ragIndexPromise) {
+        // Race with setImmediate — adopt only if already resolved
+        const settled = await Promise.race([
+          ragIndexPromise,
+          new Promise(r => setImmediate(() => r(null))),
+        ]);
+        if (settled) {
+          ragIndex = settled;
+          ragIndexPromise = null;
+          process.stderr.write(`\x1b[90m[geniesh] RAG index ready: ${ragIndex.length} chunks\x1b[0m\n`);
         }
       }
-      if (editMatch) {
-        const candidate = (editMatch[1] || editMatch[2] || '').replace(/[.,;:!?)]$/, '');
-        // Try matching against allFiles first (like extractFileRefs)
-        const found = allFiles.find(f => {
-          const fn = f.replace(/\\/g, '/').toLowerCase();
-          const cn = candidate.toLowerCase();
-          return fn.endsWith('/' + cn) || fn === cn || fn.includes('/' + cn);
-        });
-        if (found) {
-          if (!fileRefs.includes(found)) fileRefs.push(found);
-        } else if (candidate.includes('/') || candidate.includes('\\')) {
-          // File not in allFiles — try reading from project dir
-          fileRefs.push(join(dir, candidate));
+
+      // Query for genx — /ctx overrides; any other slash command skips genx
+      let genxQuery = ctxMatch ? (ctxMatch[1] || ctxMatch[2]).trim() : questionText;
+      if (!ctxMatch && ragIndex && !hasSlashCmd) {
+        const isProse = trimmed.includes(' ') && !/[A-Z_]/.test(trimmed.replace(/\s/g, ''));
+        if (isProse) {
+          try {
+            const candidates = await search(trimmed, ragIndex, 5);
+            const idRe = /\b([a-z][a-zA-Z0-9]{2,}[A-Z][a-zA-Z0-9]*|[A-Z][a-z]+[A-Z][a-zA-Z0-9]*)\b/g;
+            const found = new Set();
+            for (const c of candidates) for (const m of (c.chunk || '').matchAll(idRe)) found.add(m[1]);
+            if (found.size > 0) {
+              const discovered = [...found].slice(0, 6).join(' ');
+              process.stderr.write(`\x1b[90m[geniesh] discovered: ${discovered}\x1b[0m\n`);
+              genxQuery = discovered;
+            }
+          } catch { /* non-fatal */ }
         }
       }
-      const ctxSpinner = ora({
-        text: symbols.length
-          ? `Building context (${opts._lazyMode ? 'lazy' : 'BFS + RAG'}: ${symbols.join(', ')})…`
-          : fileRefs.length
-            ? `Building context (files: ${fileRefs.map(f => basename(f)).join(', ')})…`
-            : 'Building context…',
-        color: 'cyan',
-      }).start();
 
-      let contextText = '';
-      try {
-        if (opts._lazyMode) {
-          const profile = opts._profile;
-          const langIds = profile.languages.map(l => l.id);
-          const activeMods = getLanguages().filter(m => langIds.includes(m.id) || m.id === 'generic');
-          const { contextString, trace } = await lazyBuildContext(trimmed, dir, profile, { budget: opts.budget || 128000, fileRefs });
-          contextText = contextString;
-          const grepCount = trace.filter(t => t.method === 'grep').length;
-          const bfsCount = trace.filter(t => t.method === 'bfs').length;
-          const ragCount = trace.filter(t => t.method === 'rag').length;
-          const profileCount = trace.filter(t => t.method === 'profile').length;
-          const refCount = trace.filter(t => t.method === 'file-ref').length;
-          const tokenEst = Math.round(contextString.length / 4);
-          ctxSpinner.succeed(`Context: ${trace.length} windows` +
-            (profileCount ? ` (${profileCount} profile` : '') +
-            (grepCount ? ` + ${grepCount} grep` : '') +
-            (bfsCount ? ` + ${bfsCount} BFS` : '') +
-            (ragCount ? ` + ${ragCount} BM25` : '') +
-            (refCount ? ` + ${refCount} ref` : '') +
-            ((profileCount || grepCount || bfsCount || ragCount || refCount) ? ')' : '') +
-            ` — ${tokenEst.toLocaleString()} tok`);
-        } else {
-          if (opts.budget && graph) graph._budget = opts.budget;
-          const { contextString, trace } = await buildChatContext(trimmed, index, allFiles, graph, fileRefs, search);
-          contextText = contextString;
-          const bfsCount = trace.filter(t => t.method === 'bfs').length;
-          const ragCount = trace.filter(t => t.method === 'rag').length;
-          const refCount = trace.filter(t => t.method === 'file-ref').length;
-          const tokenEst = Math.round(contextString.length / 4);
-          const budget = graph?._budget || 128000;
-          const pct = Math.round(contextString.length / budget * 100);
-          ctxSpinner.succeed(`Context: ${trace.length} windows` +
-            (bfsCount ? ` (${bfsCount} BFS` : '') +
-            (ragCount ? ` + ${ragCount} RAG` : '') +
-            (refCount ? ` + ${refCount} ref` : '') +
-            ((bfsCount || ragCount || refCount) ? ')' : '') +
-            ` — ${tokenEst.toLocaleString()} tok` +
-            (graph ? ` (${pct}%)` : ''));
+      // Run genx (skip for plain slash commands; /ctx explicitly triggers it)
+      let contextMd = '';
+      if (!hasSlashCmd || ctxMatch) {
+        const cs = ora({ text: `[geniesh] running genx: ${genxQuery.slice(0, 60)}…`, color: 'cyan' }).start();
+        try {
+          contextMd = await runGenx(genxQuery, '', dir, { compressModel });
+          cs.succeed(`[geniesh] context: ${Math.round(contextMd.length / 4).toLocaleString()} tok`);
+        } catch (err) {
+          cs.warn(`[geniesh] genx failed (${err.message}) — proceeding without code context`);
         }
-
-      } catch (err) {
-        ctxSpinner.warn(`Context build failed (${err.message}), falling back to plain message`);
       }
 
-      // Strip command prefix and fetched URLs from question
-      let questionText = searchFollowUp || trimmed;
-      if (webContent) {
-        if (!searchFollowUp) {
-          const searchCmd = questionText.match(/^\/search\s+(.+)/s);
-          if (searchCmd) {
-            questionText = searchCmd[1].trim();
-          }
-        }
-        for (const url of extractUrls(trimmed)) {
-          questionText = questionText.replace(url, 'the fetched page');
-        }
-        questionText = questionText.replace(/\s+/g, ' ').trim();
-      }
-
-      const content = webContent || contextText
-        ? `${contextText ? `[Codebase context]\n${contextText}\n\n` : ''}${webContent ? `[Web page content]\n${webContent}\n\n` : ''}Read the [Web page content] above and answer using both the web page content and the codebase context.\n\nQuestion: ${questionText}`
-        : trimmed;
+      // Build user message — questionText already has slash commands stripped
+      let question = questionText || trimmed;
+      for (const url of extractUrls(trimmed)) question = question.replace(url, 'the fetched page');
+      question = question.replace(/\s+/g, ' ').trim();
+      const parts = [];
+      if (contextMd) parts.push(contextMd);
+      if (fileContent) parts.push(fileContent);
+      if (webContent) parts.push(`[Web page content]\n${webContent}`);
+      parts.push(`Question: ${question}`);
 
       applySlideWindow(messages);
-      messages.push({ role: 'user', content });
+      messages.push({ role: 'user', content: parts.join('\n\n') });
 
-      // ─ LLM call ───────────────────────────────────────────────────────────────
+      // LLM call
       process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
       try {
-        const reply = await runChat(messages);
+        let reply = await runChat(messages);
         messages.push({ role: 'assistant', content: reply });
 
-        // ─ Post-response: detect edits and commands ──────────────────────────────
-        let currentReply = reply;
+        // Signal handling (REQUERY / REQUERY_INTERNET / bash)
+        reply = await handleSignals(reply, messages, dir, ask, { compressModel });
 
-        // Auto-retry if the LLM refused to edit but was asked to make a change
-        let retries = 0;
-        // Resolve target file once for both retry logic and code block comparison
-        const editFile = editMatch ? editMatch[1].replace(/[.,;:!?)]$/, '') : '';
-        const absFile = editMatch ? allFiles.find(f => {
-          const fn = f.replace(/\\/g, '/').toLowerCase();
-          return fn.endsWith('/' + editFile.toLowerCase()) || fn.includes('/' + editFile.toLowerCase());
-        }) : null;
-        const fileContent = absFile ? await readFile(absFile).catch(() => '') : '';
-        // Extract function name and specific change from the user's question
-        const fnRequest = trimmed.match(/(?:function\s+)?(\w+)\s*\([^)]*\)/);
-        const fnName = fnRequest ? fnRequest[1] : 'handle';
-        const changeRequest = trimmed.replace(/.*?(?:edit|change|modify|add|update|fix)\s.*?(?:function\s+)?\w+\s*\([^)]*\)\s*/i, '').replace(/^to\s+/i, '').trim() || '';
-
-        while (editMatch && retries < 3) {
-          const hasEditBlock = currentReply.includes('SEARCH') || /```\w+:[^\s]/.test(currentReply);
-          if (hasEditBlock) break;
-          const hasCodeBlock = currentReply.includes('```');
-          if (hasCodeBlock) {
-            // Only skip retry if a code block IS a substantive function edit (not cosmetic)
-            const codeBlocks = currentReply.match(/```[\w.]*\n[\s\S]*?```/g);
-            const hasSubstantiveEdit = codeBlocks?.some(block => {
-              const c = block.replace(/```[\w.]*\n?/, '').replace(/\n```$/, '').trim();
-              const m = c.match(/function\s+(\w+)\s*\(/);
-              if (!m) return false;
-              // Reject placeholder/example code blocks
-              const placeholderRe = /\.\.\.|\/\/.*(?:in practice|rest of|your code|example|something like|would follow|or any other|copyright|implementation not shown)/i;
-              if (placeholderRe.test(c)) return false;
-              // Compare with original — skip retry only if at least 2 lines differ
-              if (fileContent && fnName) {
-                const lines = fileContent.split('\n');
-                const fnIdx = lines.findIndex(l => new RegExp(`function\\s+${fnName}\\s*\\(`).test(l));
-                if (fnIdx >= 0) {
-                  let depth = 0, endIdx = fnIdx, started = false;
-                  for (let i = fnIdx; i < lines.length && i < fnIdx + 300; i++) {
-                    for (const ch of lines[i]) {
-                      if (ch === '{') { depth++; started = true; }
-                      if (ch === '}') depth--;
-                    }
-                    if (started && depth <= 0 && i > fnIdx) { endIdx = i; break; }
-                  }
-                  const orig = lines.slice(fnIdx, endIdx + 1).join('\n');
-                  const oL = orig.split('\n'), nL = c.split('\n');
-                  let diffCount = 0;
-                  for (let i = 0; i < Math.max(oL.length, nL.length); i++) {
-                    if ((oL[i] || '').trim() !== (nL[i] || '').trim()) diffCount++;
-                  }
-                  return diffCount >= 2; // only skip if substantive
-                }
-              }
-              return true; // can't compare, assume substantive
-            });
-            if (hasSubstantiveEdit) break; // let code block fallback handle it
-          }
-          const refusalPatterns = /\b(cannot|can't|i don't see|i can see fragments|not able to|unable to|not typical|not recommended|instead.*use|not appropriate|would be unusual)\b/i;
-          if (!refusalPatterns.test(currentReply) && !hasCodeBlock) break;
-
-          retries++;
-          // Find the target function text for the retry prompt
-          let funcText = '';
-          if (fnName && fileContent) {
-            const lines = fileContent.split('\n');
-            const fnIdx = lines.findIndex(l => new RegExp(`function\\s+${fnName}\\s*\\(`).test(l));
-            if (fnIdx >= 0) {
-              let depth = 0, endIdx = fnIdx, started = false;
-              for (let i = fnIdx; i < lines.length && i < fnIdx + 300; i++) {
-                for (const ch of lines[i]) {
-                  if (ch === '{') { depth++; started = true; }
-                  if (ch === '}') depth--;
-                }
-                if (started && depth <= 0 && i > fnIdx) { endIdx = i; break; }
-              }
-              funcText = lines.slice(fnIdx, endIdx + 1).join('\n');
-            }
-          }
-          const retryMsg = retries >= 3
-            ? '\n[SYSTEM OVERRIDE] You are in DIRECT EDIT mode. You MUST output a SEARCH/REPLACE block.\n' +
-              'Do NOT explain. Do NOT suggest alternatives. Do NOT refuse.\n' +
-              'The user asked: ' + changeRequest + '\n' +
-              'File: ' + editFile + '\n' +
-              'Function: ' + fnName + '\n\n' +
-              (funcText ? 'Existing function:\n```\n' + funcText + '\n```\n\n' : '') +
-              'Output ONLY:\n' + editFile + '\nSEARCH\n[exact existing function]\nREPLACE\n[modified function]'
-            : '\n[System] You MUST modify the `' + fnName + '` function in `' + editFile + '`.\n' +
-              'Do NOT suggest alternative approaches. Do NOT just reformat or add comments.\n' +
-              'Make the ACTUAL change requested: ' + changeRequest + '\n' +
-              (funcText ? 'The existing ' + fnName + ' function:\n```\n' + funcText + '\n```\n' : '') +
-              'Output a SEARCH/REPLACE block with the function text EXACTLY as shown in SEARCH.';
-          messages.push({ role: 'user', content: retryMsg });
-          process.stdout.write(`\n\x1b[36mAssistant\x1b[0m:\n`);
-          currentReply = await runChat(messages);
-          messages.push({ role: 'assistant', content: currentReply });
-        }
-
-        // After retries: clear editMatch only if retries exhausted (not if we
-        // broke out early with a substantive code block that the fallback handles)
-        if (editMatch && retries >= 3) {
-          const hasSREdit = /SEARCH[\s\S]*?REPLACE/.test(currentReply);
-          const hasFullEdit = /```\w+\s*:/.test(currentReply);
-          if (!hasSREdit && !hasFullEdit) {
-            editMatch = null;
-          }
-        }
-
-        let agentLoop = true;
-        while (agentLoop) {
-          agentLoop = false;
-
-          // Check for file edits
-          const edits = parseFileEdits(currentReply, allFiles);
-          let lastEditError = null;
-          for (const edit of edits) {
-            let diff;
-            let apply;
-            let originalContent;
-            if (edit.type === 'sr') {
-              originalContent = await readFile(edit.file).catch(() => '');
-              diff = formatSearchReplaceDiff(edit.file, edit.search, edit.replace);
-              apply = () => applySearchReplace(edit.file, edit.search, edit.replace);
-            } else {
-              originalContent = await readFile(edit.file).catch(() => '');
-              diff = formatDiff(originalContent, edit.content, edit.file);
-              apply = () => applyFullFileEdit(edit.file, edit.content);
-            }
-            if (!diff) continue;
-            process.stdout.write(`\n${diff}\n`);
-            const answer = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
-            if (!answer || answer.toLowerCase().startsWith('y') || answer === '') {
-              try {
-                await apply();
-                // Syntax check
-                if (/\.(js|mjs|cjs)$/i.test(edit.file)) {
-                  try {
-                    execSync(`node --check "${edit.file}"`, { stdio: 'pipe', timeout: 10000 });
-                    process.stdout.write(`\x1b[32m✓ ${edit.file} updated (syntax OK)\x1b[0m\n`);
-                  } catch (synErr) {
-                    // Revert on syntax failure
-                    if (originalContent) {
-                      await writeFile(edit.file, originalContent, 'utf-8');
-                    }
-                    process.stdout.write(`\x1b[31m✗ ${edit.file} syntax check FAILED — reverted\x1b[0m\n`);
-                    process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
-                    lastEditError = new Error(`Syntax check failed for ${edit.file}`);
-                  }
-                } else {
-                  process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
-                }
-              } catch (err) {
-                process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
-                lastEditError = err;
-              }
-            } else {
-              process.stdout.write(`\x1b[33mSkipped ${edit.file}\x1b[0m\n`);
-            }
-          }
-
-          // If SEARCH text wasn't found, try function-level fallback
-          if (lastEditError && lastEditError.message.includes('not found')) {
-            const srEdit = edits.find(e => e.type === 'sr');
-            if (srEdit) {
-              const oldContent = await readFile(srEdit.file).catch(() => '');
-              if (oldContent) {
-                // Extract function name from the SEARCH or REPLACE text
-                const funcMatch = (srEdit.search + srEdit.replace).match(/function\s+(\w+)\s*\(/);
-                if (funcMatch) {
-                  const funcName = funcMatch[1];
-                  const oldLines = oldContent.split('\n');
-                  const funcRegex = new RegExp(`function\\s+${funcName}\\s*\\([^)]*\\)`);
-                  let startIdx = oldLines.findIndex(l => funcRegex.test(l));
-                  if (startIdx >= 0) {
-                    let depth = 0, endIdx = startIdx, started = false;
-                    for (let i = startIdx; i < oldLines.length && i < startIdx + 300; i++) {
-                      for (const ch of oldLines[i]) {
-                        if (ch === '{') { depth++; started = true; }
-                        if (ch === '}') depth--;
-                      }
-                      if (started && depth <= 0 && i > startIdx) { endIdx = i; break; }
-                    }
-                    if (endIdx <= startIdx) endIdx = Math.min(startIdx + srEdit.replace.split('\n').length, oldLines.length);
-                    const oldFunc = oldLines.slice(startIdx, endIdx + 1).join('\n');
-                    const newHead = oldLines.slice(0, startIdx).join('\n');
-                    const newTail = oldLines.slice(endIdx + 1).join('\n');
-                    const fullNew = (newHead ? newHead + '\n' : '') + srEdit.replace + (newTail ? '\n' + newTail : '');
-                    process.stdout.write(`\n\x1b[33mSEARCH text not found — retrying by function \x1b[1m${funcName}\x1b[0m:\x1b[0m\n`);
-                    // Show brief diff
-                    const oLines = oldFunc.split('\n');
-                    const rLines = srEdit.replace.split('\n');
-                    const max = Math.min(oLines.length, rLines.length, 8);
-                    for (let i = 0; i < max; i++) {
-                      if (oLines[i] !== rLines[i]) {
-                        process.stdout.write(`\x1b[31m- ${oLines[i]}\x1b[0m\n`);
-                        process.stdout.write(`\x1b[32m+ ${rLines[i]}\x1b[0m\n`);
-                      } else {
-                        process.stdout.write(`  ${oLines[i]}\n`);
-                      }
-                    }
-                    const answer2 = await ask(`Replace function \x1b[1m${funcName}\x1b[0m in ${srEdit.file}? [\x1b[1mY\x1b[0m/n] `);
-                    if (!answer2 || answer2.toLowerCase() === 'y' || answer2 === '') {
-                      try {
-                        await writeFile(srEdit.file, fullNew);
-                        if (/\.(js|mjs|cjs)$/i.test(srEdit.file)) {
-                          try {
-                            execSync(`node --check "${srEdit.file}"`, { stdio: 'pipe', timeout: 10000 });
-                            process.stdout.write(`\x1b[32m✓ ${srEdit.file} updated (syntax OK)\x1b[0m\n`);
-                          } catch (synErr) {
-                            process.stdout.write(`\x1b[33m⚠  Updated but syntax check FAILED:\x1b[0m\n`);
-                            process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
-                          }
-                        } else {
-                          process.stdout.write(`\x1b[32m✓ ${srEdit.file} updated\x1b[0m\n`);
-                        }
-                      } catch (err2) {
-                        process.stdout.write(`\x1b[31m✗ Failed: ${err2.message}\x1b[0m\n`);
-                      }
-                    } else {
-                      process.stdout.write(`\x1b[33mSkipped\x1b[0m\n`);
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // Fallback: if no edit block was found but the LLM showed a code block
-          // that looks like a function edit, parse and apply it
-          if (edits.length === 0 && editMatch) {
-            const targetFile = allFiles.find(f => {
-              const fn = f.replace(/\\/g, '/').toLowerCase();
-              const cn = editMatch[1].replace(/[.,;:!?)]$/, '').toLowerCase();
-              return fn.endsWith('/' + cn) || fn.includes('/' + cn);
-            });
-            if (targetFile) {
-              const codeBlocks = currentReply.match(/```[\w.]*\n[\s\S]*?```/g);
-              if (codeBlocks) {
-                const oldContent = await readFile(targetFile).catch(() => '');
-                if (!oldContent) break;
-                for (const block of codeBlocks) {
-                  const newContent = block.replace(/```[\w.]*\n?/, '').replace(/\n```$/, '').trim();
-                  const oldLines = oldContent.split('\n');
-
-                  // Pattern A: Function edit — code block looks like a function/method def
-                  const funcMatch = newContent.match(/(?:(\w+(?:\.\w+)*)\s*(?:\.\s*prototype\s*\.\s*)?=\s*)?function\s+(\w+)\s*\(([^)]*)\)/);
-                  if (funcMatch) {
-                    const funcName = funcMatch[2];
-                    const funcArgs = funcMatch[3];
-                    // Search the file for this function definition using regex
-                    const funcRegex = new RegExp(
-                      `function\\s+${funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\([^)]*\\)`,
-                      'i'
-                    );
-                    let startIdx = oldLines.findIndex(l => funcRegex.test(l));
-                    if (startIdx === -1) {
-                      // Try without args — match just the function name
-                      const simpleRegex = new RegExp(
-                        `[=\\s]function\\s+${funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`,
-                        'i'
-                      );
-                      startIdx = oldLines.findIndex(l => simpleRegex.test(l));
-                    }
-                    if (startIdx >= 0) {
-                      // Strip any lines before the function definition in the code block
-                      // (LLMs often add JSDoc/comments above the function)
-                      let cleanContent = newContent;
-                      const defIdx = cleanContent.search(
-                        new RegExp(`(?:\\w+(?:\\.\\w+)*\\s*(?:\\.\\s*prototype\\s*\\.\\s*)?=\\s*)?function\\s+${funcName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*\\(`)
-                      );
-                      if (defIdx > 0) cleanContent = cleanContent.slice(defIdx).trim();
-                      if (!cleanContent) cleanContent = newContent;
-                      // Find end of old function by brace matching
-                      let depth = 0;
-                      let endIdx = startIdx;
-                      let started = false;
-                      for (let i = startIdx; i < oldLines.length && i < startIdx + 300; i++) {
-                        for (const ch of oldLines[i]) {
-                          if (ch === '{') { depth++; started = true; }
-                          if (ch === '}') depth--;
-                        }
-                        if (started && depth <= 0 && i > startIdx) { endIdx = i; break; }
-                      }
-                      if (endIdx <= startIdx) endIdx = Math.min(startIdx + cleanContent.split('\n').length, oldLines.length);
-                      const oldFunc = oldLines.slice(startIdx, endIdx + 1).join('\n');
-                      const newHead = oldLines.slice(0, startIdx).join('\n');
-                      const newTail = oldLines.slice(endIdx + 1).join('\n');
-                      const fullNew = (newHead ? newHead + '\n' : '') + cleanContent + (newTail ? '\n' + newTail : '');
-                      process.stdout.write(`\n\x1b[33mProposed function edit:\x1b[0m\n`);
-                      process.stdout.write(`\x1b[35m--- ${targetFile}:${startIdx + 1}\x1b[0m\n`);
-                      process.stdout.write(`\x1b[36m+++ (proposed)\x1b[0m\n`);
-                      const difLines = [];
-                      const oldLines2 = oldFunc.split('\n');
-                      const newLines2 = cleanContent.split('\n');
-                      const maxLines = Math.max(oldLines2.length, newLines2.length);
-                      for (let i = 0; i < maxLines && i < 12; i++) {
-                        if (i < oldLines2.length && i < newLines2.length && oldLines2[i] === newLines2[i]) {
-                          difLines.push(` ${oldLines2[i]}`);
-                        } else {
-                          if (i < oldLines2.length) difLines.push(`\x1b[31m-${oldLines2[i]}\x1b[0m`);
-                          if (i < newLines2.length) difLines.push(`\x1b[32m+${newLines2[i]}\x1b[0m`);
-                        }
-                      }
-                      if (oldLines2.length > 12 || newLines2.length > 12) difLines.push('  ...');
-                      process.stdout.write(difLines.join('\n') + '\n');
-                      const answer = await ask(`Replace function \x1b[1m${funcName}\x1b[0m in ${targetFile}? [\x1b[1mY\x1b[0m/n] `);
-                      if (!answer || answer.toLowerCase().startsWith('y') || answer === '') {
-                        try {
-                          await writeFile(targetFile, fullNew);
-                          if (/\.(js|mjs|cjs)$/i.test(targetFile)) {
-                            try {
-                              execSync(`node --check "${targetFile}"`, { stdio: 'pipe', timeout: 10000 });
-                              process.stdout.write(`\x1b[32m✓ ${targetFile} updated (syntax OK)\x1b[0m\n`);
-                            } catch (synErr) {
-                              process.stdout.write(`\x1b[31m✗ Syntax error in result:\x1b[0m\n`);
-                              process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
-                            }
-                          } else {
-                            process.stdout.write(`\x1b[32m✓ ${targetFile} updated\x1b[0m\n`);
-                          }
-                        } catch (err) {
-                          process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
-                        }
-                      } else {
-                        process.stdout.write(`\x1b[33mSkipped\x1b[0m\n`);
-                      }
-                    }
-                    break;
-                  }
-
-                  // Pattern B: Full file edit — code block contains the file's first line
-                  const firstLine = oldContent.split('\n')[0]?.trim();
-                  if (firstLine && newContent.includes(firstLine) && newContent !== oldContent.trim()) {
-                    const diff = formatDiff(oldContent, newContent, targetFile);
-                    if (diff) {
-                      process.stdout.write(`\n${diff}\n`);
-                      const answer = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
-                      if (!answer || answer.toLowerCase().startsWith('y') || answer === '') {
-                        try {
-                          await writeFile(targetFile, newContent);
-                          if (/\.(js|mjs|cjs)$/i.test(targetFile)) {
-                            try {
-                              execSync(`node --check "${targetFile}"`, { stdio: 'pipe', timeout: 10000 });
-                              process.stdout.write(`\x1b[32m✓ ${targetFile} updated (syntax OK)\x1b[0m\n`);
-                            } catch (synErr) {
-                              process.stdout.write(`\x1b[31m✗ Syntax error in result:\x1b[0m\n`);
-                              process.stdout.write(synErr.stderr.toString().split('\n').slice(0, 5).join('\n') + '\n');
-                            }
-                          } else {
-                            process.stdout.write(`\x1b[32m✓ ${targetFile} updated\x1b[0m\n`);
-                          }
-                        } catch (err) {
-                          process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
-                        }
-                      } else {
-                        process.stdout.write(`\x1b[33mSkipped ${targetFile}\x1b[0m\n`);
-                      }
-                      break;
-                    }
-                  }
-                }
-              }
-            }
-          }
-
-          // Check for shell commands
-          const commands = parseShellCommands(currentReply);
-          for (const cmd of commands) {
-            process.stdout.write(`\n\x1b[90m$ ${cmd}\x1b[0m\n`);
-            const answer = await ask(`Run this command? [\x1b[1mY\x1b[0m/n] `);
-            if (!answer || answer.toLowerCase().startsWith('y') || answer === '') {
-              const result = runShellCommand(cmd);
-              process.stdout.write(`\x1b[90m${result.output.slice(0, 2000)}${result.output.length > 2000 ? '\n... (truncated)' : ''}\x1b[0m\n`);
-              process.stdout.write(`\x1b[90m  → exit ${result.exitCode} (${result.elapsed})\x1b[0m\n`);
-              // Feed output back to LLM
-              const feedback = `Command executed:\n\`\`\`\n$ ${cmd}\n${result.output}\n\`\`\`\nExit code: ${result.exitCode}\n\nContinue with the next step.`;
-              messages.push({ role: 'user', content: feedback });
-              process.stdout.write(`\n\x1b[36mAssistant\x1b[0m:\n`);
-              currentReply = await runChat(messages);
-              messages.push({ role: 'assistant', content: currentReply });
-              process.stdout.write('\n');
-              agentLoop = true; // Check again for more commands
-            } else {
-              process.stdout.write(`\x1b[33mSkipped\x1b[0m\n`);
-            }
-          }
-        }
-
-        // ─ Refinement loop: if model emits SIGNAL_REQUERY, load missing files and retry ─
-        const MAX_REFINES = 3;
-        let refineCount = 0;
-        let refinedReply = currentReply;
-        const originalQuestion = trimmed;
-
-        while (refineCount < MAX_REFINES) {
-          // Priority 1: deterministic SIGNAL_REQUERY path/to/file
-          const signalMatch = refinedReply.match(/^SIGNAL_REQUERY\s+(.+)$/m);
-
-          // Priority 2: natural language fallback — explicit "cannot find / not in context"
-          let naturalMatch = null;
-          if (!signalMatch) {
-            const nlRe = /\b(?:cannot|cannot|(?:not\s+(?:in\s+(?:the\s+)?)?(?:provided\s+)?context)|(?:unable\s+to\s+(?:find|locate|determine)))\b/i;
-            if (nlRe.test(refinedReply)) {
-              const pathPattern = /["`']?((?:[a-zA-Z0-9_./-]+\/)*[a-zA-Z0-9_-]+\.[a-z]+)["`']?/g;
-              const matches = [...refinedReply.matchAll(pathPattern)].map(m => m[1]);
-              if (matches.length > 0) naturalMatch = matches;
-            }
-          }
-
-          const signal = signalMatch ? [signalMatch[1]] : null;
-          const rawPaths = signal || naturalMatch;
-          if (!rawPaths) break;
-
-          const rawPath = signalMatch[1].trim();
-          // Resolve candidates to actual files
-          const resolvedRefs = [];
-          for (const rawPath of rawPaths) {
-            const found = allFiles.find(f => {
-              const fn = f.replace(/\\/g, '/').toLowerCase();
-              const rp = rawPath.replace(/\\/g, '/').toLowerCase();
-              return fn.endsWith('/' + rp) || fn === rp || fn.endsWith(rp);
-            });
-            if (found) {
-              if (!resolvedRefs.includes(found)) resolvedRefs.push(found);
-            } else {
-              // Try extension-agnostic fallback — e.g. model says "Container.php" but file is "src/Container/Container.php"
-              const baseName = rawPath.split('/').pop().toLowerCase();
-              const found2 = allFiles.find(f => f.split(/[/\\]/).pop().toLowerCase() === baseName);
-              if (found2 && !resolvedRefs.includes(found2)) resolvedRefs.push(found2);
-            }
-          }
-          if (resolvedRefs.length === 0) break;
-
-          // Build targeted context for the missing files
-          let extraContext = '';
-          for (const f of resolvedRefs.slice(0, 3)) {
-            const content = await readFile(f).catch(() => '');
-            if (content.trim()) {
-              const relPath = f.replace(/\\/g, '/').replace(process.cwd().replace(/\\/g, '/') + '/', '');
-              extraContext += `\n// file-ref: ${relPath}\n${content.substring(0, 8000)}\n`;
-            }
-          }
-
-          if (!extraContext) break;
-          refineCount++;
-
-          const refFilesList = resolvedRefs.slice(0, 3).map(f => {
-            const rel = f.replace(/\\/g, '/').replace(process.cwd().replace(/\\/g, '/') + '/', '');
-            return `  - ${rel}`;
-          }).join('\n');
-
-          process.stdout.write(`\n\x1b[33m(🔍 Refining — loading ${resolvedRefs.length} file(s)…)${refineCount < MAX_REFINES ? ` iteration ${refineCount}/${MAX_REFINES}` : ' last attempt'}\x1b[0m\n`);
-
-          const refinePrompt = `I found the additional files you mentioned:\n${refFilesList}\n\nHere is their full content:\n${extraContext}\n\nPlease answer the original question using this additional context. Do not say you cannot find the information — it is provided above.\n\nOriginal question: ${originalQuestion}`;
-
-          messages.push({ role: 'user', content: refinePrompt });
-          process.stdout.write(`\x1b[36mAssistant\x1b[0m:\n`);
-          refinedReply = await runChat(messages);
-          messages.push({ role: 'assistant', content: refinedReply });
-          process.stdout.write(`${refinedReply}\n`);
-        }
-
-        // If refinements happened, use the final refined reply for edit detection
-        if (refineCount > 0) currentReply = refinedReply;
+        // Edit detection
+        await handleEdits(reply, ask);
       } catch (err) {
         console.error(`\nError: ${err.message}`);
         messages.pop();
@@ -896,7 +522,7 @@ program
       console.log(`  \x1b[1;36m🧞  geniesh\x1b[0m  \x1b[90mv${version}\x1b[0m`);
       console.log('  \x1b[90mYour code genie is out of the bottle.\x1b[0m');
       console.log('');
-      console.log('  \x1b[90m  geniesh chat\x1b[0m       \x1b[90mExplore any codebase hands-free\x1b[0m');
+      console.log('  \x1b[90m  geniesh chat\x1b[0m       \x1b[90mInteractive chat (genx context pipeline)\x1b[0m');
       console.log('  \x1b[90m  geniesh "fix this"\x1b[0m  \x1b[90m--file src/app.js  One-shot analysis\x1b[0m');
       console.log('  \x1b[90m  geniesh --help\x1b[0m     \x1b[90mSee all commands\x1b[0m');
       console.log('');
@@ -904,100 +530,52 @@ program
     }
     try {
       let prompt;
-
       if (opts.file) {
         const content = await readFile(opts.file);
-
         if (opts.fn) {
           const fnCode = extractFunction(content, opts.fn);
-          if (!fnCode) {
-            console.error(`Function "${opts.fn}" not found in ${opts.file}`);
-            process.exit(1);
-          }
+          if (!fnCode) { console.error(`Function "${opts.fn}" not found in ${opts.file}`); process.exit(1); }
           prompt = buildDirectPrompt(query, fnCode, `${opts.file} → ${opts.fn}()`);
         } else {
           prompt = buildDirectPrompt(query, content, opts.file);
         }
       } else if (opts.dir) {
-        if (!(await indexExists())) {
-          console.error(`No index found. Run first:\n  geniesh index --dir ${opts.dir}`);
-          process.exit(1);
-        }
-
-        const index = await loadIndex();
-        const chunks = await search(query, index, 5);
-
-        if (chunks.length === 0) {
-          console.error('No relevant chunks found in the index.');
-          process.exit(1);
-        }
-
+        if (!(await indexExists())) { console.error(`No index found. Run first:\n  geniesh index --dir ${opts.dir}`); process.exit(1); }
+        const idx = await loadIndex();
+        const chunks = await search(query, idx, 5);
+        if (chunks.length === 0) { console.error('No relevant chunks found.'); process.exit(1); }
         prompt = buildPrompt(query, chunks);
       } else {
-        console.error('Provide --file <path> or --dir <path>');
-        program.help();
-        process.exit(1);
+        console.error('Provide --file <path> or --dir <path>'); program.help(); process.exit(1);
       }
-
       await runQuery(prompt);
-    } catch (err) {
-      console.error(`\nError: ${err.message}`);
-      process.exit(1);
-    }
+    } catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
   });
 
-// ─── ai refs <name> --dir <path> ────────────────────────────────────────────
+// ─── refs ─────────────────────────────────────────────────────────────────────
 
 program
   .command('refs')
-  .description('Find all usages of a symbol across a directory (no index needed)')
-  .argument('<name>', 'Function, variable, or symbol name to search for')
+  .description('Find all usages of a symbol across a directory')
+  .argument('<name>', 'Symbol name to search for')
   .requiredOption('--dir <path>', 'Directory to search')
-  .option('--ask <question>', 'Ask the LLM a question about the found usages')
-  .option('--explain', 'Ask the LLM to explain the symbol and its usage patterns')
+  .option('--ask <question>', 'Ask the LLM about the usages')
+  .option('--explain', 'Explain the symbol and its usage patterns')
   .option('--context <lines>', 'Lines of context around each match', (v) => parseInt(v, 10), 20)
   .action(async (name, opts) => {
     try {
       process.stdout.write(`Searching for "${name}" in ${opts.dir}...\n`);
       const results = await grepDir(name, opts.dir, opts.context);
-
       console.log(formatGrepResults(results, name));
-
-      const question = opts.ask
-        || (opts.explain
-          ? `Explain what "${name}" does, how it is used across the codebase, and what the calling patterns suggest about its responsibilities and design.`
-          : null);
-
+      const question = opts.ask || (opts.explain ? `Explain what "${name}" does and its usage patterns.` : null);
       if (question) {
-        if (results.length === 0) {
-          console.error('No matches to analyse.');
-          process.exit(1);
-        }
-        const context = buildGrepContext(results);
-        const prompt = `You are a senior software engineer.
-
-Context (all usages of "${name}" found in the codebase):
-${context}
-
-Task:
-${question}
-
-Return:
-- bugs
-- improvements
-- security issues
-- explanation (if relevant)
-
-Be concise and practical.`;
-        await runQuery(prompt);
+        if (results.length === 0) { console.error('No matches.'); process.exit(1); }
+        await runQuery(`You are a senior software engineer.\n\nContext:\n${buildGrepContext(results)}\n\nTask:\n${question}\n\nBe concise.`);
       }
-    } catch (err) {
-      console.error(`\nError: ${err.message}`);
-      process.exit(1);
-    }
+    } catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
   });
 
-// ─── ai review <query> --file / --dir ───────────────────────────────────────
+// ─── review ───────────────────────────────────────────────────────────────────
 
 program
   .command('review')
@@ -1005,114 +583,64 @@ program
   .argument('<query>', 'Question about the code')
   .option('--file <path>', 'File to analyze')
   .option('--dir <path>', 'Directory to search (requires index)')
-  .option('--reviewer <model>', 'Reviewer model to critique the analysis', 'llama3.1')
+  .option('--reviewer <model>', 'Reviewer model', 'llama3.1')
   .action(async (query, opts) => {
     try {
-      const primaryModel = program.opts().model || 'qwen3-coder';
-      const reviewerModel = opts.reviewer;
-      let context = '';
-
+      const primary = program.opts().model || 'qwen3-coder';
+      let ctx = '';
       if (opts.file) {
-        const content = await readFile(opts.file);
-        context = `<codebase_context>\n${content}\n</codebase_context>`;
+        ctx = `<codebase_context>\n${await readFile(opts.file)}\n</codebase_context>`;
       } else if (opts.dir) {
-        if (!(await indexExists())) {
-          console.error(`No index found. Run first:\n  geniesh index --dir ${opts.dir}`);
-          process.exit(1);
-        }
-        const index = await loadIndex();
-        const chunks = await search(query, index, 5);
-        if (chunks.length === 0) {
-          console.error('No relevant chunks found in the index.');
-          process.exit(1);
-        }
-        context = buildPrompt(query, chunks);
-      } else {
-        console.error('Provide --file <path> or --dir <path>');
-        process.exit(1);
-      }
-
-      console.log(`\n\x1b[1mStage 1: Analysis (\x1b[36m${primaryModel}\x1b[0m)\x1b[0m\n`);
-
-      const analysis = await runGenerate(
-        `You are a senior software engineer.\n\n${context}\n\nQuestion: ${query}\n\nAnalyze the code and provide a thorough answer. Be specific with file names and line numbers.`,
-        primaryModel,
-      );
-
-      console.log(`\n\x1b[1mStage 2: Review (\x1b[33m${reviewerModel}\x1b[0m)\x1b[0m\n`);
-
-      setModel(reviewerModel);
-      await runQuery(
-        `You are a senior software engineer acting as a code reviewer.\n\n` +
-        `Below is an analysis produced by another AI model (${primaryModel}) in response to the question "${query}".\n\n` +
-        `<analysis>\n${analysis}\n</analysis>\n\n` +
-        `Your job is to review this analysis for:\n` +
-        `- Accuracy: Are the claims correct? Are file names and line numbers real?\n` +
-        `- Completeness: Did the analysis miss anything important?\n` +
-        `- Bug hunting: Can you find bugs the analysis missed?\n` +
-        `- Improvements: Are there better approaches?\n\n` +
-        `Be critical and specific. Praise what's good, correct what's wrong, add what's missing.`,
-      );
-      setModel(primaryModel);
-
+        if (!(await indexExists())) { console.error('No index found.'); process.exit(1); }
+        const chunks = await search(query, await loadIndex(), 5);
+        if (!chunks.length) { console.error('No chunks found.'); process.exit(1); }
+        ctx = buildPrompt(query, chunks);
+      } else { console.error('Provide --file or --dir'); process.exit(1); }
+      console.log(`\n\x1b[1mStage 1: Analysis (\x1b[36m${primary}\x1b[0m)\x1b[0m\n`);
+      const analysis = await runGenerate(`You are a senior software engineer.\n\n${ctx}\n\nQuestion: ${query}\n\nAnalyze thoroughly.`, primary);
+      console.log(`\n\x1b[1mStage 2: Review (\x1b[33m${opts.reviewer}\x1b[0m)\x1b[0m\n`);
+      setModel(opts.reviewer);
+      await runQuery(`You are a senior software engineer acting as a code reviewer.\n\nAnalysis by ${primary} for: "${query}"\n\n<analysis>\n${analysis}\n</analysis>\n\nReview for accuracy, completeness, bugs, improvements. Be critical.`);
+      setModel(primary);
       console.log();
-    } catch (err) {
-      console.error(`\nError: ${err.message}`);
-      process.exit(1);
-    }
+    } catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
   });
 
-// ─── ai eval --benchmark <file> --dir <path> ────────────────────────────────
+// ─── eval ─────────────────────────────────────────────────────────────────────
 
 program
   .command('eval')
   .description('Evaluate retrieval quality against a benchmark suite')
   .requiredOption('--benchmark <file>', 'Benchmark JSON file')
-  .requiredOption('--dir <path>', 'Directory of the codebase to evaluate against')
+  .requiredOption('--dir <path>', 'Codebase directory')
   .option('--verbose', 'Print per-benchmark details')
   .action(async (opts) => {
-    try {
-      const results = await runEval(opts.benchmark, opts.dir, !!opts.verbose);
-      console.log(formatEvalResults(results));
-    } catch (err) {
-      console.error(`\nError: ${err.message}`);
-      process.exit(1);
-    }
+    try { console.log(formatEvalResults(await runEval(opts.benchmark, opts.dir, !!opts.verbose))); }
+    catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
   });
 
-// ─── ai benchmark generate --dir <path> --output <file> ────────────────────
+// ─── benchmark ────────────────────────────────────────────────────────────────
 
-const benchmark = program.command('benchmark').description('Generate and manage benchmark suites');
-
-benchmark
-  .command('generate')
-  .description('Auto-generate a benchmark suite by analyzing the codebase with an LLM')
-  .requiredOption('--dir <path>', 'Directory of the codebase to analyze')
-  .option('--output <file>', 'Output benchmark JSON file', 'geniesh-benchmark.json')
-  .option('--model <name>', 'Ollama model to use for generation')
+const bm = program.command('benchmark').description('Generate and manage benchmark suites');
+bm.command('generate')
+  .description('Auto-generate a benchmark suite')
+  .requiredOption('--dir <path>', 'Codebase directory')
+  .option('--output <file>', 'Output file', 'geniesh-benchmark.json')
+  .option('--model <name>', 'Ollama model')
   .action(async (opts) => {
-    try {
-      const model = opts.model || program.opts().model;
-      await generateBenchmark(opts.output, opts.dir, model);
-    } catch (err) {
-      console.error(`\nError: ${err.message}`);
-      process.exit(1);
-    }
+    try { await generateBenchmark(opts.output, opts.dir, opts.model || program.opts().model); }
+    catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
   });
 
-// ─── ai self-improve [iterations] ────────────────────────────────────────
+// ─── self-improve ─────────────────────────────────────────────────────────────
 
 program
   .command('self-improve')
   .description('Run the self-improvement loop: eval → analyze → fix → retest → repeat')
   .argument('[iterations]', 'Maximum iterations (default 5)', parseInt)
   .action(async (iterations) => {
-    try {
-      await runSelfImprove(iterations);
-    } catch (err) {
-      console.error(`\nError: ${err.message}`);
-      process.exit(1);
-    }
+    try { await runSelfImprove(iterations); }
+    catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
   });
 
 program.parseAsync(process.argv);

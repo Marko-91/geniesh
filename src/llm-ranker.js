@@ -62,7 +62,7 @@ export async function llmRank(question, candidates, { model } = {}) {
 
   try {
     const prompt = buildRankPrompt(question, candidates);
-    const content = await runGenerate(prompt, model || 'deepseek-r1:7b');
+    const content = await runGenerate(prompt, model || 'qwen3-coder');
     const result = parseRankResponse(content);
     if (result && result.length > 0) return result;
   } catch (e) {
