@@ -41,7 +41,8 @@ const GENX_HISTORY = process.env.GENX_HISTORY
  * Run genx and return the full context markdown string (stdout).
  */
 async function runGenx(query, task, root, { compressModel } = {}) {
-  const args = [GENX_SCRIPT, query, '--root', root];
+  const historyPath = join(root, '.genx_history.md');
+  const args = [GENX_SCRIPT, query, '--root', root, '--history', historyPath];
   if (task) { args.push('--task', task); }
   if (compressModel) { args.push('--compress-model', compressModel); }
 
@@ -340,9 +341,9 @@ program
     console.log('────────────────────────────────────────────────────────────\n');
     console.log('\x1b[90m💡 Tips\x1b[0m');
     console.log('\x1b[90m Commands:\x1b[0m');
-    console.log('\x1b[90m   /search "query"             Search DuckDuckGo + fetch top pages\x1b[0m');
-    console.log('\x1b[90m   /file path/to/file ...      Load full file(s) into context\x1b[0m');
-    console.log('\x1b[90m   /ctx symbol1 symbol2 ...    Run genx with exactly these symbols\x1b[0m');
+    console.log('\x1b[90m   /search "query"              Search DuckDuckGo + fetch top pages\x1b[0m');
+    console.log('\x1b[90m   /file "path1, path2"         Load full file(s) into context\x1b[0m');
+    console.log('\x1b[90m   /ctx|/context "symbol1, symbol2"  Run genx with exactly these symbols\x1b[0m');
     console.log('\x1b[90m   https://...                 Paste a URL — page is fetched automatically\x1b[0m');
     console.log('\x1b[90m   exit  or  Ctrl+C            Quit\x1b[0m');
     console.log('');
@@ -367,23 +368,24 @@ program
       if (!trimmed || trimmed.toLowerCase() === 'exit') { rl.close(); console.log('Bye!'); break; }
 
       // Parse all slash commands from anywhere in the message.
-      // /search, /file, /ctx may appear at the start or embedded mid-sentence.
-      const searchMatch = trimmed.match(/\/search\s+"([^"]+)"|\/search\s+(\S+)/);
-      const fileMatch   = trimmed.match(/\/file\s+(.+?)(?=\s*\/\w|\s*$)/s);
-      const ctxMatch    = trimmed.match(/\/ctx\s+"([^"]+)"|\/ctx\s+(\S.*?)(?=\s*\/\w|\s*$)/s);
-      const hasSlashCmd = !!(searchMatch || fileMatch || ctxMatch);
+      // All commands require quoted delimiters to avoid accidental token capture:
+      //   /search "query"   /file "path1, path2"   /context "word1, word2"
+      const searchMatch  = trimmed.match(/\/search\s+"([^"]+)"/);
+      const fileMatch    = trimmed.match(/\/file\s+"([^"]+)"/);
+      const ctxMatch     = trimmed.match(/\/(?:ctx|context)\s+"([^"]+)"/);
+      const hasSlashCmd  = !!(searchMatch || fileMatch || ctxMatch);
 
       // Strip slash commands from the prose question sent to the LLM
       let questionText = trimmed
-        .replace(/\/search\s+"[^"]+"|\/search\s+\S+/g, '')
-        .replace(/\/file\s+.+?(?=\s*\/\w|$)/gs, '')
-        .replace(/\/ctx\s+"[^"]+"|\/ctx\s+\S.*?(?=\s*\/\w|$)/gs, '')
+        .replace(/\/search\s+"[^"]+"/g, '')
+        .replace(/\/file\s+"[^"]+"/g, '')
+        .replace(/\/(?:ctx|context)\s+"[^"]+"/g, '')
         .replace(/\s+/g, ' ').trim();
 
       // /search command
       let manualWebContent = '';
       if (searchMatch) {
-        const sq = (searchMatch[1] || searchMatch[2]).trim();
+        const sq = searchMatch[1].trim();
         const ss = ora({ text: `Searching "${sq}"…`, color: 'yellow' }).start();
         try {
           const results = await webSearch(sq, 5);
@@ -414,10 +416,11 @@ program
       }
       const webContent = manualWebContent || urlWebContent;
 
-      // /file command — paths from pre-parsed fileMatch above
+      // /file command — paths from pre-parsed fileMatch above.
+      // Format: /file "path1, path2, ..."
       let fileContent = '';
       if (fileMatch) {
-        const paths = (fileMatch[1] || '').trim().split(/\s+/);
+        const paths = fileMatch[1].split(',').map(s => s.trim()).filter(Boolean);
         const parts = [];
         for (const p of paths) {
           const absPath = p.startsWith('/') ? p : join(dir, p);
@@ -446,8 +449,8 @@ program
         }
       }
 
-      // Query for genx — /ctx overrides; any other slash command skips genx
-      let genxQuery = ctxMatch ? (ctxMatch[1] || ctxMatch[2]).trim() : questionText;
+      // Query for genx — /context (or /ctx) overrides; any other slash command skips genx
+      let genxQuery = ctxMatch ? ctxMatch[1].trim() : questionText;
       if (!ctxMatch && ragIndex && !hasSlashCmd) {
         const isProse = trimmed.includes(' ') && !/[A-Z_]/.test(trimmed.replace(/\s/g, ''));
         if (isProse) {
@@ -465,7 +468,7 @@ program
         }
       }
 
-      // Run genx (skip for plain slash commands; /ctx explicitly triggers it)
+      // Run genx (skip for plain slash commands; /context or /ctx explicitly triggers it)
       let contextMd = '';
       if (!hasSlashCmd || ctxMatch) {
         const cs = ora({ text: `[geniesh] running genx: ${genxQuery.slice(0, 60)}…`, color: 'cyan' }).start();
