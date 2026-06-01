@@ -356,6 +356,7 @@ program
     const rl = createInterface({ input: inputSrc, output: process.stdout });
 
     let inputResolve = null;
+    const inputBuffer = [];
 
     rl.on('line', (line) => {
       // \v was substituted for \n inside a paste by the transform above
@@ -364,13 +365,19 @@ program
         const r = inputResolve;
         inputResolve = null;
         r(actual);
+      } else {
+        inputBuffer.push(actual);
       }
     });
 
     function ask(question) {
       return new Promise((resolve) => {
         process.stdout.write(question);
-        inputResolve = resolve;
+        if (inputBuffer.length > 0) {
+          resolve(inputBuffer.shift());
+        } else {
+          inputResolve = resolve;
+        }
       });
     }
 
@@ -429,6 +436,7 @@ program
       const searchMatch  = trimmed.match(/\/search\s+"([^"]+)"/);
       const fileMatch    = trimmed.match(/\/file\s+"([^"]+)"/);
       const ctxMatch     = trimmed.match(/\/(?:ctx|context)\s+"([^"]+)"/);
+      const hasEditCmd   = /\b\/edit\b/.test(trimmed);
       const hasSlashCmd  = !!(searchMatch || fileMatch || ctxMatch);
 
       // Strip slash commands from the prose question sent to the LLM
@@ -436,6 +444,7 @@ program
         .replace(/\/search\s+"[^"]+"/g, '')
         .replace(/\/file\s+"[^"]+"/g, '')
         .replace(/\/(?:ctx|context)\s+"[^"]+"/g, '')
+        .replace(/\b\/edit\b/gi, '')
         .replace(/\s+/g, ' ').trim();
 
       // /search command
@@ -505,7 +514,7 @@ program
         }
       }
 
-      // genx context — only on explicit /context or /ctx command
+      // genx context — only on explicit /context or /ctx
       let contextMd = '';
       if (ctxMatch) {
         const genxQuery = ctxMatch[1].trim();
@@ -541,7 +550,7 @@ program
         reply = await handleSignals(reply, messages, dir, ask, { compressModel });
 
         // Edit detection — only on explicit /edit command
-        if (/\b\/edit\b/.test(trimmed)) {
+        if (hasEditCmd) {
           await handleEdits(reply, ask);
         }
       } catch (err) {
