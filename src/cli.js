@@ -299,7 +299,50 @@ program
     }];
 
     const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const ask = (q) => new Promise((res) => rl.question(q, res));
+
+    if (process.stdin.isTTY) {
+      process.stdout.write('\x1b[?2004h');
+    }
+
+    let inputResolve = null;
+    let inPaste = false;
+    let pasteLines = [];
+
+    rl.on('line', (line) => {
+      if (line.startsWith('\x1b[200~')) {
+        inPaste = true;
+        pasteLines = [line.slice(6)];
+        return;
+      }
+      if (inPaste) {
+        if (line.endsWith('\x1b[201~')) {
+          inPaste = false;
+          pasteLines.push(line.slice(0, -6));
+          const fullText = pasteLines.join('\n');
+          pasteLines = [];
+          if (inputResolve) {
+            const resolve = inputResolve;
+            inputResolve = null;
+            resolve(fullText);
+          }
+        } else {
+          pasteLines.push(line);
+        }
+        return;
+      }
+      if (inputResolve) {
+        const resolve = inputResolve;
+        inputResolve = null;
+        resolve(line);
+      }
+    });
+
+    function ask(question) {
+      return new Promise((resolve) => {
+        process.stdout.write(question);
+        inputResolve = resolve;
+      });
+    }
 
     console.log('\n────────────────────────────────────────────────────────────');
     console.log('🧞  geniesh  —  type \x1b[33mexit\x1b[0m or Ctrl+C to quit');
@@ -329,7 +372,10 @@ program
     console.log('\x1b[90m   • ```bash blocks            LLM runs commands — you approve each one\x1b[0m');
     console.log('\x1b[90m   • Edits shown as diffs — you approve before they are applied\x1b[0m\n');
 
-    process.on('SIGINT', () => { console.log('\nBye!'); rl.close(); process.exit(0); });
+    process.on('SIGINT', () => {
+      if (process.stdin.isTTY) process.stdout.write('\x1b[?2004l');
+      console.log('\nBye!'); rl.close(); process.exit(0);
+    });
 
     // Load genx history from previous sessions — no genx call, just file read
     let historyContent = '';
@@ -340,7 +386,10 @@ program
       let userInput;
       try { userInput = await ask('\x1b[32mYou\x1b[0m: '); } catch { break; }
       const trimmed = userInput.trim();
-      if (!trimmed || trimmed.toLowerCase() === 'exit') { rl.close(); console.log('Bye!'); break; }
+      if (!trimmed || trimmed.toLowerCase() === 'exit') {
+        if (process.stdin.isTTY) process.stdout.write('\x1b[?2004l');
+        rl.close(); console.log('Bye!'); break;
+      }
 
       // Parse all slash commands from anywhere in the message.
       // All commands require quoted delimiters to avoid accidental token capture:
