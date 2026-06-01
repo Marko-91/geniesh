@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import { createInterface } from 'readline';
+import { Transform } from 'stream';
 import { resolve } from 'path';
 import { join } from 'path';
 import { createRequire } from 'module';
@@ -135,7 +136,7 @@ async function handleEdits(reply, ask) {
     let diff, apply, originalContent;
     if (edit.type === 'sr') {
       originalContent = await readFile(edit.file).catch(() => '');
-      diff = formatSearchReplaceDiff(edit.file, edit.search, edit.replace);
+      diff = formatSearchReplaceDiff(edit.file, edit.search, edit.replace, originalContent);
       apply = () => applySearchReplace(edit.file, edit.search, edit.replace);
     } else {
       originalContent = await readFile(edit.file).catch(() => '');
@@ -162,8 +163,10 @@ async function handleEdits(reply, ask) {
           process.stdout.write(`\x1b[32m✓ ${edit.file} updated\x1b[0m\n`);
         }
       } catch (err) {
-        process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
         lastEditError = err;
+        if (!err.message.includes('not found')) {
+          process.stdout.write(`\x1b[31m✗ Failed: ${err.message}\x1b[0m\n`);
+        }
       }
     } else {
       process.stdout.write(`\x1b[33mSkipped ${edit.file}\x1b[0m\n`);
@@ -194,8 +197,10 @@ async function handleEdits(reply, ask) {
             const head = lines.slice(0, si).join('\n');
             const tail = lines.slice(ei + 1).join('\n');
             const fullNew = (head ? head + '\n' : '') + srEdit.replace + (tail ? '\n' + tail : '');
-            process.stdout.write(`\n\x1b[33mSEARCH text not found — retrying by function \x1b[1m${funcName}\x1b[0m:\x1b[0m\n`);
-            const ans2 = await ask(`Replace function \x1b[1m${funcName}\x1b[0m in ${srEdit.file}? [\x1b[1mY\x1b[0m/n] `);
+            process.stdout.write(`\n\x1b[33m⚠ Exact text not found — replacing function \x1b[1m${funcName}\x1b[0m instead\x1b[0m\n`);
+            const diff = formatDiff(old, fullNew, srEdit.file);
+            if (diff) process.stdout.write(`\n${diff}\n`);
+            const ans2 = await ask(`Apply replacement for \x1b[1m${funcName}\x1b[0m in ${srEdit.file}? [\x1b[1mY\x1b[0m/n] `);
             if (!ans2 || ans2.toLowerCase() === 'y' || ans2 === '') {
               try {
                 await writeFile(srEdit.file, fullNew);
@@ -298,42 +303,68 @@ program
         'After running a command you will see its output and can continue.\nBe concise and practical.',
     }];
 
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-
     if (process.stdin.isTTY) {
       process.stdout.write('\x1b[?2004h');
     }
 
+    class BracketedPasteTransform extends Transform {
+      constructor() {
+        super();
+        this._buf = '';
+        this._in = false;
+      }
+      _transform(chunk, _, cb) {
+        this._buf += chunk.toString();
+        this._drain();
+        cb();
+      }
+      _flush(cb) {
+        if (this._buf) this.push(this._buf);
+        cb();
+      }
+      _drain() {
+        while (this._buf.length) {
+          if (this._in) {
+            const end = this._buf.indexOf('\x1b[201~');
+            if (end === -1) {
+              this.push(this._buf.replace(/\n/g, '\x00'));
+              this._buf = '';
+            } else {
+              const block = this._buf.slice(0, end).replace(/\n/g, '\x00');
+              this.push(block + '\n');
+              this._buf = this._buf.slice(end + 6);
+              this._in = false;
+            }
+          } else {
+            const start = this._buf.indexOf('\x1b[200~');
+            if (start === -1) {
+              this.push(this._buf);
+              this._buf = '';
+            } else {
+              if (start > 0) this.push(this._buf.slice(0, start));
+              this._buf = this._buf.slice(start + 6);
+              this._in = true;
+            }
+          }
+        }
+      }
+    }
+
+    const inputSrc = process.stdin.isTTY
+      ? process.stdin.pipe(new BracketedPasteTransform())
+      : process.stdin;
+
+    const rl = createInterface({ input: inputSrc, output: process.stdout });
+
     let inputResolve = null;
-    let inPaste = false;
-    let pasteLines = [];
 
     rl.on('line', (line) => {
-      if (line.startsWith('\x1b[200~')) {
-        inPaste = true;
-        pasteLines = [line.slice(6)];
-        return;
-      }
-      if (inPaste) {
-        if (line.endsWith('\x1b[201~')) {
-          inPaste = false;
-          pasteLines.push(line.slice(0, -6));
-          const fullText = pasteLines.join('\n');
-          pasteLines = [];
-          if (inputResolve) {
-            const resolve = inputResolve;
-            inputResolve = null;
-            resolve(fullText);
-          }
-        } else {
-          pasteLines.push(line);
-        }
-        return;
-      }
+      // \x00 was substituted for \n inside a paste by the transform above
+      const actual = line.replace(/\x00/g, '\n');
       if (inputResolve) {
-        const resolve = inputResolve;
+        const r = inputResolve;
         inputResolve = null;
-        resolve(line);
+        r(actual);
       }
     });
 
@@ -348,6 +379,7 @@ program
     console.log('🧞  geniesh  —  type \x1b[33mexit\x1b[0m or Ctrl+C to quit');
     console.log(`📂  Root      : ${dir}`);
     console.log(`🧩  Model     : ${modelName}`);
+    if (compressModel) console.log(`🧹  Compress  : ${compressModel}`);
     if (ragIndex) console.log(`📚  RAG index : ${ragIndex.length} chunks (symbol discovery active)`);
     else if (ragIndexPromise) console.log(`📚  RAG index : loading…`);
     else console.log(`📚  RAG index : not built  (run: geniesh index --dir ${dir})`);

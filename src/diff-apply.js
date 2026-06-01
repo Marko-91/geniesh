@@ -250,33 +250,58 @@ export function formatDiff(oldContent, newContent, filePath) {
   if (oldContent === newContent) return null;
   const oldLines = oldContent.split('\n');
   const newLines = newContent.split('\n');
-  const changes = [];
   const max = Math.max(oldLines.length, newLines.length);
+
+  const changed = [];
   for (let i = 0; i < max; i++) {
-    if (oldLines[i] !== newLines[i]) {
-      const lineNum = i + 1;
-      const ctxBefore = Math.max(0, i - 2);
-      const ctxAfter = Math.min(max, i + 3);
-      let block = '';
-      for (let j = ctxBefore; j < ctxAfter; j++) {
-        if (j >= max) continue;
-        if (j === i) {
-          block += `\x1b[31m- ${oldLines[j]}\x1b[0m\n`;
-          block += `\x1b[32m+ ${newLines[j]}\x1b[0m\n`;
-        } else {
-          block += `  ${oldLines[j]}\n`;
-        }
-      }
-      changes.push({ line: lineNum, block, ctxBefore, ctxAfter });
+    if (oldLines[i] !== newLines[i]) changed.push(i);
+  }
+  if (!changed.length) return null;
+
+  const firstIdx = Math.max(0, changed[0] - 2);
+  const lastIdx = Math.min(max - 1, changed[changed.length - 1] + 2);
+  const changeSet = new Set(changed);
+
+  const out = [`\x1b[1m${filePath}\x1b[0m — L${changed[0] + 1}–L${changed[changed.length - 1] + 1}`];
+  for (let i = firstIdx; i <= lastIdx; i++) {
+    const ln = String(i + 1).padStart(4);
+    if (changeSet.has(i)) {
+      if (oldLines[i] !== undefined)
+        out.push(` \x1b[31m-${ln}│ ${oldLines[i]}\x1b[0m`);
+      if (newLines[i] !== undefined)
+        out.push(` \x1b[32m+${ln}│ ${newLines[i]}\x1b[0m`);
+    } else {
+      out.push(` \x1b[90m ${ln}│ ${oldLines[i]}\x1b[0m`);
     }
   }
-  if (changes.length === 0) return null;
-  const first = changes[0].line;
-  const last = changes[changes.length - 1].line;
-  return `\x1b[1m${filePath}\x1b[0m — ${changes.length} change(s)\n${changes[0].block}` + (changes.length > 1 ? '\n  ...' : '');
+  return out.join('\n');
 }
 
-export function formatSearchReplaceDiff(file, search, replace) {
+export function formatSearchReplaceDiff(file, search, replace, fileContent) {
+  if (fileContent && fileContent.includes(search)) {
+    const lines = fileContent.split('\n');
+    const searchLines = search.split('\n');
+    const li = lines.findIndex(l => l.includes(searchLines[0].trim()));
+    if (li >= 0) {
+      const start = Math.max(0, li - 2);
+      const end = Math.min(lines.length, li + searchLines.length + 2);
+      const out = [`\x1b[1m${file}\x1b[0m — L${li + 1}–L${li + searchLines.length}`];
+      for (let i = start; i < end; i++) {
+        const ln = String(i + 1).padStart(4);
+        if (i >= li && i < li + searchLines.length) {
+          out.push(` \x1b[31m-${ln}│ ${lines[i]}\x1b[0m`);
+        } else {
+          out.push(` \x1b[90m ${ln}│ ${lines[i]}\x1b[0m`);
+        }
+      }
+      const rlines = replace.split('\n');
+      for (let i = 0; i < rlines.length; i++) {
+        const ln = String(li + 1 + i).padStart(4);
+        out.push(` \x1b[32m+${ln}│ ${rlines[i]}\x1b[0m`);
+      }
+      return out.join('\n');
+    }
+  }
   return `\x1b[1m${file}\x1b[0m — search/replace\n` +
     `\x1b[31m- ${search.split('\n')[0]}${search.includes('\n') ? ' …' : ''}\x1b[0m\n` +
     `\x1b[32m+ ${replace.split('\n')[0]}${replace.includes('\n') ? ' …' : ''}\x1b[0m`;
