@@ -55,3 +55,4 @@ credentials/*
 /zod/
 /monolog/
 
+.genx_history.md

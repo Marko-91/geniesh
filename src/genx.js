@@ -166,6 +166,25 @@ async function compressHistory(history, model) {
   return await runGenerate(prompt, model);
 }
 
+export async function compressConversation(messages, model) {
+  const lines = [];
+  for (const msg of messages) {
+    if (msg.role === 'system') continue;
+    lines.push(`### ${msg.role}`);
+    lines.push(msg.content);
+    lines.push('');
+  }
+  if (!lines.length) return '';
+
+  const prompt =
+    'Compress this conversation history into a concise summary. ' +
+    'Keep ALL decisions made, file paths changed, function names, bug descriptions, ' +
+    'and key reasoning. Remove verbose prose, repeated code, and low-value chatter. ' +
+    'Output only the summary.\n\n' +
+    lines.join('\n');
+  return await runGenerate(prompt, model);
+}
+
 function filterHistoryBySymbols(history, symbols) {
   if (!symbols.length || !history) return history;
   const sections = history.split(/\n(?=---\n## )/);

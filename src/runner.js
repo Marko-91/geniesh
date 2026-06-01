@@ -9,6 +9,71 @@ let _model = process.env.MODEL || 'qwen3-coder';
 export function setModel(name) { _model = name; }
 export function getModel()     { return _model; }
 
+const FALLBACK_CONTEXT_LENGTHS = {
+  qwen3: 131072, 'qwen3-coder': 131072,
+  'llama3.1': 131072, 'llama3.2': 131072, 'llama3.3': 131072,
+  'deepseek-coder-v2': 131072, 'deepseek-r1': 131072,
+  'deepseek-coder': 16384,
+  'codellama': 16384, 'codellama:13b': 16384,
+  'codegemma': 8192, 'gemma2': 8192,
+};
+
+/**
+ * Fetch model info from Ollama, extracting context_length from model_info.
+ * Falls back to a hardcoded map, then to 32_000.
+ */
+export async function getModelInfo(model) {
+  const m = model || _model;
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/show`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: m }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const mi = data.model_info || {};
+      // Try common keys for context length
+      for (const key of Object.keys(mi)) {
+        if (key.endsWith('.context_length')) {
+          const val = mi[key];
+          // GGUF metadata values can be strings or numbers
+          const n = typeof val === 'number' ? val : Number(val);
+          if (Number.isFinite(n) && n > 0) return { contextLength: n };
+        }
+      }
+    }
+  } catch { /* fall through */ }
+
+  // Hardcoded fallback
+  for (const prefix of Object.keys(FALLBACK_CONTEXT_LENGTHS)) {
+    if (m.startsWith(prefix)) {
+      return { contextLength: FALLBACK_CONTEXT_LENGTHS[prefix] };
+    }
+  }
+  return { contextLength: 32_000 };
+}
+
+/**
+ * Count tokens for a text string against the given model.
+ * Uses Ollama's /api/tokenize endpoint; falls back to chars/4.
+ */
+export async function countTokens(text, model) {
+  const m = model || _model;
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/tokenize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: m, prompt: text }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (Array.isArray(data.tokens)) return data.tokens.length;
+    }
+  } catch { /* fall through */ }
+  return Math.floor(text.length / 4);
+}
+
 /**
  * Runs a single-turn prompt against the given model and returns the response text.
  * Does NOT write to stdout — used for chaining model outputs (e.g., review command).

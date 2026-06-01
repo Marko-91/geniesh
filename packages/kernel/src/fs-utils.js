@@ -33,7 +33,7 @@ const IGNORED_FILES = new Set([
   'geniesh-graph.json',
   '.ai-index.json', '.ai-relations.json',
   'package-lock.json', 'yarn.lock', 'pnpm-lock.yaml',
-  '.genieshignore',
+  '.genieshignore', '.genx_history.md'
 ]);
 
 export function parseIgnoreFile(content) {

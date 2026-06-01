@@ -14,20 +14,85 @@ import { extractFunction } from './extractor.js';
 import { buildIndex, loadIndex, indexExists, buildIndexFromFileList } from './indexer.js';
 import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt, SYSTEM_RULES } from './prompt.js';
-import { runQuery, runChat, runGenerate, setModel, getModel } from './runner.js';
+import { runQuery, runChat, runGenerate, setModel, getModel, getModelInfo, countTokens } from './runner.js';
 import { setEmbedder } from './embedder.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { extractUrls, fetchWebContent } from './web-fetch.js';
 import { webSearch, formatSearchResults } from './web-search.js';
-function applySlideWindow(messages, maxTurns = 8) {
-  while (messages.length > 1 + maxTurns * 2) messages.splice(1, 2);
-}
 import { parseFileEdits, formatDiff, formatSearchReplaceDiff, applySearchReplace } from './diff-apply.js';
 const { structuredPatch } = require('diff');
 import { parseShellCommands, runShellCommand } from './terminal-agent.js';
 import { execSync } from 'child_process';
 import ora from 'ora';
-import { runGenx } from './genx.js';
+import { runGenx, compressConversation } from './genx.js';
+
+const msgMeta = new WeakMap(); // message → { rawParts?, question? }
+
+function serializeMessages(messages) {
+  return messages.map(m => {
+    const role = m.role === 'system' ? '<|system|>' : m.role === 'user' ? '<|user|>' : '<|assistant|>';
+    return `${role}\n${m.content}\n`;
+  }).join('\n');
+}
+
+async function compactMessagesIfNeeded(messages, { contextLimit, compressModel, modelName }) {
+  if (messages.length <= 1) return;
+  const total = await countTokens(serializeMessages(messages), modelName);
+  const ratio = total / contextLimit;
+  if (ratio < 0.60) return;
+
+  // Strip stale genx/file/web bloat from old user messages (no LLM call)
+  // Keep system + last 2 turns intact
+  const preserveCount = Math.min(5, messages.length - 1);
+  const compactEnd = messages.length - preserveCount;
+  if (compactEnd >= 2) {
+    for (let i = 1; i < compactEnd; i++) {
+      const meta = msgMeta.get(messages[i]);
+      if (!meta || !meta.rawParts) continue;
+      const stripped = meta.rawParts
+        .filter(p => p.startsWith('Question:') || p.startsWith('Output each'))
+        .join('\n\n');
+      if (stripped) messages[i].content = stripped;
+    }
+  }
+
+  // Check again after stripping
+  const afterStrip = await countTokens(serializeMessages(messages), modelName);
+  const afterRatio = afterStrip / contextLimit;
+  if (afterRatio < 0.60) return;
+
+  // Determine compaction level
+  const aggressive = afterRatio >= 0.85;
+  const preserveTurns = aggressive ? 1 : 2;
+  const keepCount = Math.min(1 + preserveTurns * 2, messages.length - 1);
+  const compactIdx = messages.length - keepCount;
+  if (compactIdx < 2) return;
+
+  const toCompact = messages.slice(1, compactIdx);
+  const preserved = [messages[0], ...messages.slice(compactIdx)];
+
+  process.stderr.write(`\x1b[33m[geniesh] context at ${Math.round(afterRatio * 100)}% — compacting ${toCompact.length} message(s) with ${compressModel || modelName}…\x1b[0m\n`);
+
+  let summary;
+  try {
+    summary = await compressConversation(toCompact, compressModel || modelName);
+  } catch (err) {
+    process.stderr.write(`\x1b[31m[geniesh] compaction failed: ${err.message}\x1b[0m\n`);
+    return;
+  }
+
+  messages.length = 0;
+  messages.push(preserved[0]); // system
+  if (summary) {
+    const compactMsg = { role: 'user', content: `[Compacted conversation history]\n\n${summary}` };
+    msgMeta.set(compactMsg, { rawParts: null });
+    messages.push(compactMsg);
+  }
+  for (let i = 1; i < preserved.length; i++) {
+    messages.push(preserved[i]);
+  }
+  process.stderr.write(`\x1b[32m[geniesh] messages compacted (was ${toCompact.length}, now 1 summary)\x1b[0m\n`);
+}
 
 /**
  * Append a web-search entry to the shared genx history file.
@@ -354,6 +419,10 @@ program
         'After running a command you will see its output and can continue.\nBe concise and practical.',
     }];
 
+    const modelInfo = await getModelInfo(modelName).catch(() => ({ contextLength: 32768 }));
+    const contextLimit = modelInfo.contextLength;
+    let budgetTokens = 0;
+
     if (process.stdin.isTTY) {
       process.stdout.write('\x1b[?2004h');
     }
@@ -443,6 +512,7 @@ program
     console.log(`📂  Root      : ${dir}`);
     console.log(`🧩  Model     : ${modelName}`);
     if (compressModel) console.log(`🧹  Compress  : ${compressModel}`);
+    console.log(`📊  Budget    : 0 / ${contextLimit.toLocaleString()} tok`);
     if (ragIndex) console.log(`📚  RAG index : ${ragIndex.length} chunks (symbol discovery active)`);
     else if (ragIndexPromise) console.log(`📚  RAG index : loading…`);
     else console.log(`📚  RAG index : not built  (run: geniesh index --dir ${dir})`);
@@ -453,6 +523,8 @@ program
     console.log('\x1b[90m   /file "path1, path2"         Load full file(s) into context\x1b[0m');
     console.log('\x1b[90m   /ctx|/context "symbol1, symbol2"  Run genx with exactly these symbols\x1b[0m');
     console.log('\x1b[90m   /edit                       Enable SEARCH/REPLACE edit approval\x1b[0m');
+    console.log('\x1b[90m   /budget                     Show token budget breakdown\x1b[0m');
+    console.log('\x1b[90m   /compact                    Manually compact conversation history\x1b[0m');
     console.log('\x1b[90m   https://...                 Paste a URL — page is fetched automatically\x1b[0m');
     console.log('\x1b[90m   exit  or  Ctrl+C            Quit\x1b[0m');
     console.log('');
@@ -485,6 +557,30 @@ program
       if (!trimmed || trimmed.toLowerCase() === 'exit') {
         if (process.stdin.isTTY) process.stdout.write('\x1b[?2004l');
         rl.close(); console.log('Bye!'); break;
+      }
+
+      // /budget — show token breakdown
+      if (/^\/budget\b/.test(trimmed)) {
+        const total = await countTokens(serializeMessages(messages), modelName);
+        const pct = Math.round((total / contextLimit) * 100);
+        let color = '\x1b[32m'; // green
+        if (pct >= 85) color = '\x1b[31m'; else if (pct >= 60) color = '\x1b[33m';
+        process.stderr.write(
+          `\x1b[90m── token budget ──\n` +
+          `  messages  : ${messages.length}\n` +
+          `  used      : ${total.toLocaleString()} tok (${messages.length > 1 ? Math.round(total / messages.length).toLocaleString() : 0} avg)\n` +
+          `  limit     : ${contextLimit.toLocaleString()} tok\n` +
+          `  budget    : ${color}${pct}%\x1b[0m\x1b[90m\n` +
+          `──────────────────\x1b[0m\n`
+        );
+        continue;
+      }
+
+      // /compact — manually trigger compaction
+      if (/^\/compact\b/.test(trimmed)) {
+        process.stderr.write(`\x1b[33m[geniesh] manual compaction triggered…\x1b[0m\n`);
+        await compactMessagesIfNeeded(messages, { contextLimit, compressModel, modelName });
+        continue;
       }
 
       // Parse all slash commands from anywhere in the message.
@@ -597,14 +693,25 @@ program
         parts.push('Output each edit as: FILE_PATH\nSEARCH\n<old code>\nREPLACE\n<new code>. Do NOT use <<<<<<<, =======, >>>>>>>, or ``` markers.');
       }
 
-      applySlideWindow(messages);
-      messages.push({ role: 'user', content: parts.join('\n\n') });
+      // Compact if approaching context limit
+      await compactMessagesIfNeeded(messages, { contextLimit, compressModel, modelName });
+
+      const userMsg = { role: 'user', content: parts.join('\n\n') };
+      msgMeta.set(userMsg, { rawParts: parts, question });
+      messages.push(userMsg);
 
       // LLM call
       process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
       try {
         let reply = await runChat(messages);
         messages.push({ role: 'assistant', content: reply });
+
+        // Update budget display
+        budgetTokens = await countTokens(serializeMessages(messages), modelName);
+        const bpct = Math.round((budgetTokens / contextLimit) * 100);
+        let bcolor = '\x1b[32m';
+        if (bpct >= 85) bcolor = '\x1b[31m'; else if (bpct >= 60) bcolor = '\x1b[33m';
+        process.stderr.write(`\x1b[90m[tok: ${budgetTokens.toLocaleString()} / ${contextLimit.toLocaleString()} ${bcolor}${bpct}%\x1b[0m\x1b[90m]\x1b[0m\n`);
 
         // Signal handling (REQUERY / REQUERY_INTERNET / bash)
         reply = await handleSignals(reply, messages, dir, ask, { compressModel });
