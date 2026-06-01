@@ -1,480 +1,116 @@
 # geniesh
 
-A local AI developer assistant powered by **qwen3-coder** with a **RAG (Retrieval-Augmented Generation)** pipeline and **BFS relation-graph traversal**. Runs entirely on your machine — no API keys, no data leaving your system.
+Local AI dev assistant. Runs on Ollama — no API keys, no data leaving your machine.
 
-## Requirements
+```
+User: "how does tryAdd handle errors?"
+        │
+        ▼
+  ┌─────────────────────────────────┐
+  │  genx (geniesh context pipeline)│
+  │  mapx → symbol search + call    │
+  │         graph via grep/BM25     │
+  │  genx → assemble snippets,      │
+  │         build context doc        │
+  └──────────┬──────────────────────┘
+             │ context document
+             ▼
+  ┌─────────────────────────────────┐
+  │  LLM (Ollama qwen3-coder)       │
+  │  reply: "tryAdd is defined in…" │
+  └─────────────────────────────────┘
+             │ answer
+             ▼
+          stdout
+```
 
-- Node.js 18+
-- [Ollama](https://ollama.com) running locally
-- `ollama serve` -> to run locally
-
-## Installation
+## Quick Start
 
 ```bash
-# 1. Install dependencies
+# Prerequisites
 npm install
+ollama pull qwen3-coder    # chat model
+ollama pull nomic-embed-text  # optional: RAG index
 
-# 2. Pull required Ollama models (minimum)
-ollama pull nomic-embed-text
-ollama pull qwen3-coder
-
-# Alternative embedders (optional — swap via --embedder)
-# ollama pull mxbai-embed-large
-# ollama pull snowflake-arctic-embed2
-
-# 3. Link globally so `geniesh` works anywhere (run from the project directory)
-cd /path/to/geniesh && npm link
-
-# Or run without linking, using node directly:
-# node src/cli.js chat
+# Link globally
+npm link
 ```
 
-## Quickstart
-
-The fastest way to get answers about any codebase:
+### Chat mode (main interface)
 
 ```bash
-# cd into any project and start chatting — auto-indexes on first use
-geniesh chat
-
-# Ask about specific files — geniesh loads them as full context
-#   "what does the render function in lib/application.js do?"
-#   "find the bug in src/auth.js around line 42"
-#   "how does Router.handle dispatch requests?"
-
-# Or use one-shot queries for quick analysis
-geniesh "are there any security issues?" --file src/auth.js
-geniesh refs validateToken --dir src/ --explain
+cd /path/to/any/project
+geniesh chat                           # start interactive chat
+geniesh chat --dir .                   # explicit project root
+geniesh chat --model llama3.1          # use a different model
 ```
 
-That's it. No config files, no API keys, no data leaving your machine.
+Chat commands (type at the `You:` prompt):
 
-## Docker
+| Command | What it does |
+|---------|-------------|
+| `how does methodName work?` | Prose question — uses RAG (if indexed) for symbol discovery |
+| `/context "symbol1, symbol2"` | Explicit genx context fetch for exact symbols |
+| `/search "query"` | DuckDuckGo search + fetch top pages |
+| `/file "path1, path2"` | Load full file(s) into context |
+| `/edit` | Enable SEARCH/REPLACE edit approval in replies |
+| `exit` / Ctrl+C | Quit |
 
-```powershell
-cd docker && docker compose build geniesh && up.sh
-```
+During chat, genx only runs on explicit `/context` commands — prose questions skip it for speed.
 
-Full docs: [`docker/README.md`](docker/README.md)
-
-## Release Process
-
-Every push to `main` is a release. We squash-merge feature branches and bump the version following semver:
+### One-shot queries
 
 ```bash
-# Squash your branch, then bump and push
-npm version major   # breaking changes
-npm version minor   # new features
-npm version patch   # bug fixes
-
-git push origin main --tags
+geniesh "what does the render function do?" --file lib/app.js
+geniesh "find security issues" --file src/auth.js
+geniesh refs validateToken --dir src/
+geniesh review "find bugs" --file src/auth.js
 ```
 
-- PRs and multi-commit branches **must be squash-merged** — one canonical commit per change-set.
-- Commit messages use [Conventional Commits](https://www.conventionalcommits.org/):
-  `feat:` → minor, `fix:` → patch, `BREAKING CHANGE` → major.
-- The squash commit message becomes the single entry for that change.
-
-## Commands
-
-### `geniesh index --dir <path>`
-
-Scans a directory, chunks all source files, generates embeddings, builds a **symbol relation graph** with cross-file import/alias resolution, and saves both `geniesh-index.json` and `geniesh-relations.json`. Run this once before using `geniesh chat`.
+### RAG index (optional, improves vague queries)
 
 ```bash
-geniesh index --dir src/
 geniesh index --dir .
-
-# Use a different embedding model
-geniesh --embedder mxbai-embed-large index --dir .
-```
-
-The following are automatically ignored: `node_modules`, `dist`, `.git`, `build`, `coverage`, `target`, `.gradle`, `Pods`, `.build`, `deps`, `_build`, `tmp`, `temp`, `.idea`, `.vscode`, `bazel-*`, hidden directories, minified files, and `pnpm-lock.yaml`.
-
-**`.genieshignore`** — place a `.genieshignore` file (`.gitignore` syntax) in the project root to exclude additional files or directories from indexing.
-
----
-
-### `geniesh "<query>" --file <path>`
-
-Reads a file and sends it directly to the LLM.
-
-```bash
-geniesh "find bugs" --file src/auth.ts
-geniesh "are there any security issues?" --file src/api/routes.js
-```
-
----
-
-### `geniesh "<query>" --file <path> --fn <function-name>`
-
-Extracts a single named function from a file and analyzes only that function.
-
-```bash
-geniesh "explain this function" --fn login --file src/auth.ts
-geniesh "find edge cases" --fn validateToken --file src/middleware.js
-```
-
-Supports function declarations, arrow functions, async functions, and class methods.
-
----
-
-### `geniesh "<query>" --dir <path>`
-
-Uses the RAG index to retrieve the most relevant code chunks for the query, then sends only those chunks to the LLM. **Requires running `geniesh index` first.** (Does not use the relation graph — use `geniesh chat` for BFS traversal.)
-
-```bash
 geniesh "how does authentication work?" --dir src/
-geniesh "where are database queries made?" --dir .
-geniesh "find potential memory leaks" --dir src/
 ```
-
-The top 5 most semantically similar chunks (by cosine similarity) are retrieved and used as context.
-
----
-
-### `geniesh chat`
-
-Starts an intelligent multi-turn chat session with auto-indexing, **BFS relation-graph traversal**, **auto-detected file references**, and RAG augmentation.
-
-```bash
-geniesh chat
-geniesh chat --dir /path/to/project
-geniesh chat --model qwen3-coder
-geniesh --embedder mxbai-embed-large chat --model llama3.1
-```
-
-If no `geniesh-index.json` exists in the current directory, the index is built automatically before the session starts.
-
-**How context is built per turn:**
-
-Each message triggers a two-tier context pipeline:
-
-1. **BFS relation-graph traversal (budget-limited)**  
-   Code symbols are extracted from your question (`camelCase`, `PascalCase`, `snake_case`, `ALL_CAPS`, `dotted.paths`). These seed a breadth-first search over a pre-built **symbol relation graph** (`geniesh-relations.json`) that maps every symbol to the files it appears in and every file to the symbols it contains. Each symbol carries **metadata** — its kind (`class`, `function`, `variable`, `reference`), whether it's **exported**, and its **line range** in the source file. At each round, symbols are grepped to retrieve code windows, and the relation graph reveals new symbols from the same files — no re-grepping needed. New symbols are sorted by priority: exported symbols first, then class > function > variable > reference. The BFS continues until the 10,000-character context budget is exhausted (frontier capped at 20 symbols per round). If the question has no code symbols, the BFS is seeded from the top RAG chunks instead.
-
-2. **RAG (remaining budget)**  
-   Cosine similarity search fills any remaining context budget, with README and `.md` files prioritised.
-
-During context building, the BFS log is printed in grey:
-```
-  [bfs 0] symbols: methodName, itemTypeUtil
-  [bfs 0] added 3 window(s), budget used: 4120/10000
-  [bfs 0→1] discovered: piq, apiResponse, integrationId (+2 more)
-  [bfs 1] symbols: piq, apiResponse, integrationId
-  [bfs 1] added 2 window(s), budget used: 7340/10000
-```
-
-```
-You: how does methodName work?
-Assistant: ...
-
-You: exit
-```
-
-Type `exit` or press `Ctrl+C` to quit.
-
----
-
-### `geniesh refs <name> --dir <path>`
-
-Finds all usages of a symbol (function calls, definitions, imports) across a directory using word-boundary matching. **No index required** — runs in milliseconds directly on the source files.
-
-```bash
-geniesh refs login --dir src/
-geniesh refs validateToken --dir .
-```
-
-Optionally ask the LLM a question about all the found usages:
-
-```bash
-geniesh refs login --dir src/ --ask "are there any security issues with how login is called?"
-geniesh refs db.query --dir src/ --ask "could any of these queries be vulnerable to injection?"
-```
-
-Or use `--explain` for a one-shot summary of what the symbol does and how it is used across the codebase:
-
-```bash
-geniesh refs login --dir src/ --explain
-geniesh refs fetchUser --dir src/ --explain
-```
-
-Control how many lines of surrounding context are captured per match (default 20):
-
-```bash
-geniesh refs fetchUser --dir src/ --context 10
-```
-
-Use this instead of `--dir` RAG when you want to find **where** something is called, defined, or imported — structural questions RAG is not suited for.
-
----
-
-### `geniesh review "<query>" --file <path>`
-
-Runs a two-model review chain: one model analyzes the code, then a second model critiques the analysis. Requires two Ollama models installed.
-
-```bash
-# Default: qwen3-coder analyzes, llama3.1 reviews
-geniesh review "find bugs in src/auth.js" --file src/auth.js
-
-# Specify both models explicitly
-geniesh review "explain chunking" --file src/chunker.js --model qwen3-coder --reviewer llama3.1
-
-# Use with RAG over an indexed directory
-geniesh review "how does auth work?" --dir src/
-```
-
-Output is printed in two stages with clear headers. The reviewer checks for accuracy, completeness, missed bugs, and better approaches.
-
----
-
-## Showcase
-
-> Real terminal screenshots generated from actual sessions on Express 5.x (152 files, 502 chunks, 1470 symbols).
-
-### `geniesh chat` on a large open-source codebase
-
-*BFS traversal discovers `application.handle`, then `Router`, `View`, `compileETag` across 3 rounds. Source files from `lib/` fill budget before test files.*
-
-![geniesh chat demo](.github/img/geniesh-chat-express.svg)
-
-### `geniesh index` — indexing a real-world project
-
-![geniesh index demo](.github/img/geniesh-index-express.svg)
-
-*152 files indexed in 14.2s with concurrent workers (4) and per-file embed batching.*
-
-### `geniesh refs` — find all usages of a symbol
-
-![geniesh refs demo](.github/img/geniesh-refs-express.svg)
-
-*`geniesh refs application.handle --explain` — 12 occurrences across 3 files with a concise summary.*
-
-### Benchmark repos
-
-geniesh is numerically evaluated against these open-source projects:
-
-| Repo | Language | Files | Nodes | Edges |
-|------|----------|-------|-------|-------|
-| [Express](https://github.com/expressjs/express) | JavaScript | 152 | 502 | ~5k |
-| [Flask](https://github.com/pallets/flask) | Python | ~200 | ~2k | ~20k |
-| [Gin](https://github.com/gin-gonic/gin) | Go | ~100 | ~1k | ~10k |
-| [Ripgrep](https://github.com/BurntSushi/ripgrep) | Rust | ~300 | ~5k | ~40k |
-| [Zod](https://github.com/colinhacks/zod) | TypeScript | 117 | ~3k | ~25k |
-| [Monolog](https://github.com/Seldaek/monolog) | PHP | 217 | 9,166 | 64,367 |
-
-Each benchmark suite has 12–15 questions with expected file/symbol answers. Run `geniesh eval --benchmark <file>` to measure file recall, symbol recall, and context efficiency.
-
-### Video walkthrough
-
-<!-- TODO: Replace with a real screen recording link -->
-<!-- ▶️ Watch demo on YouTube -->
-
----
 
 ## Architecture
 
-geniesh separates **LLM-provider-specific code** from **pure code-navigation logic**.
-Swap Ollama for OpenAI — swap only the adapter; the kernel never changes.
-
-<img alt="Geniesh Architecture Diagram" src="docs/architecture.svg" width="100%">
-
-### One flow, two responsibilities
-
 ```
-User: "how does tryAdd work?"
-            │
-            ▼
-┌───────────────────────────────────┐
-│         ADAPTER LAYER             │  embedder.js → Ollama nomic-embed-text
-│  (LLM-provider-specific)          │       │
-│                                  │  embed(question) → [0.1, 0.4, …]
-│  src/search.js   ← injects →     │       │
-│  src/embedder.js  search() dep   │  search(index, embedding) → top-K chunks
-│  src/runner.js                   │       │
-│  src/prompt.js                   │  ← scored chunks + question
-│                                  │       │
-│  cli.js orchestrates:            │       │
-│   1. build/load index            │       │
-│   2. inject search() into kernel │       ▼
-│   3. stream LLM response    ─────┼──  contextString + trace  ──┐
-└──────────────────────────────────┘                            │
-            │ scored chunks (plain data, no embeddings)          │
-            ▼                                                    │
-┌───────────────────────────────────┐                            │
-│         KERNEL LAYER              │  (same layer, no arrows)   │
-│  (pure Node, no LLM deps)         │                            │
-│                                  │                            │
-│  packages/kernel/                │                            │
-│  ├── context-builder.js  ←───────┘                            │
-│  │   BFS traversal:              │                            │
-│  │   seed symbols → grep →       │                            │
-│  │   follow relations + import   │                            │
-│  │   edges → fill budget;        │                            │
-│  │   remaining budget → RAG      │                            │
-│  │   (via injected search())     │                            │
-│  ├── grep.js          (scope-    │                            │
-│  │   aware word-boundary grep)   │                            │
-│  ├── relations.js     (symbol→   │                            │
-│  │   file + file→symbol maps,    │                            │
-│  │   import edges)               │                            │
-│  ├── symbol-utils.js  (extract   │                            │
-│  │   camelCase/PascalCase/       │                            │
-│  │   snake_case symbols)         │                            │
-│  ├── chunker.js       (indexing  │                            │
-│  │   only; line-based 100/50)    │                            │
-│  └── fs-utils.js      (scan +    │                            │
-│      read files, skip .min/.git) │                            │
-│                                  │                            │
-│  Output:                         │                            │
-│  ├── contextString (concatenated │                            │
-│  │   code sections with labels)  │                            │
-│  └── trace (what was retrieved   │                            │
-│      and why, per round)         │                            │
-└──────────────────────────────────┘                            │
-            │                                                    │
-            │ contextString                                      │
-            ▼                                                    │
-┌───────────────────────────────────┐                            │
-│         ADAPTER LAYER             │◄───────────────────────────┘
-│  (LLM chat)                       │
-│                                  │
-│  runner.js → Ollama qwen3-coder  │
-│  prompt = system + contextString │
-│           + question             │
-│  stream: "tryAdd is a helper…"   │
-└───────────────────────────────────┘
-            │ answer
-            ▼
-         stdout
-```
-
-### What goes where
-
-| Concern | Module | Layer |
-|---------|--------|-------|
-| Embed query text → vector | `embedder.js` | Adapter |
-| Cosine-similarity search over index | `search.js` | Adapter¹ |
-| LLM prompt templates | `prompt.js` | Adapter |
-| Stream LLM response | `runner.js` | Adapter |
-| CLI orchestration | `cli.js` | Adapter |
-| Directory scanning, file reading | `fs-utils.js` | Kernel |
-| Symbol extraction (camelCase etc.) | `symbol-utils.js` | Kernel |
-| Word-boundary grep + scope windows | `grep.js` | Kernel |
-| Relation graph (symbol/file/import maps) | `relations.js` | Kernel |
-| Line-based code chunking (100/50) | `chunker.js` | Kernel |
-| BFS traversal + budget + RAG merge | `context-builder.js` | Kernel |
-
-¹ *search() calls embedder.js, so it's adapter-side. The algorithm (cosine similarity) is trivial — it lives in the adapter only because calling embed() is provider-specific. If embeddings are passed in, search could move to kernel.*
-
-## How It Works
-
-geniesh is split into two layers:
-
-**`@geniesh/kernel`** (`packages/kernel/`) — the pure code navigation engine.
-Zero LLM dependencies. Can be imported by any tool (n8n, OpenCLAW, agent
-workers) without Ollama or a CLI.
-
-```
-Indexing pipeline:
-  scan dir (respects .genieshignore) → skip .min.js/.min.css
-            → chunk (100 lines, 50-line overlap)
-            → embed each chunk (nomic-embed-text, truncated to 6000 chars)
-            → save to geniesh-index.json
-            → build relation graph with symbol metadata (kind, exported, lineRange)
-              + import edges (byImports / byImporters)
-              + cross-file alias resolution (JS/TS `import { x as y }`, Python `from x import y as z`)
-              + multi-language support: JS, TS, Python, Go, PHP, Rust, Ruby, Swift, Java, Kotlin,
-                C, C++, Zig — via tree-sitter WASM parsers with native addon fallback
-            → incremental merge: only re-scan files whose hash (mtime+size) changed
-            → prune stale symbols and files → save to geniesh-relations.json
-
-Chat context pipeline (per turn):
-  extract symbols from question (camelCase/PascalCase/snake_case/ALL_CAPS/dotted)
-    → seed BFS from question symbols (or top RAG chunks if none found)
-    → for each round: grep symbols → retrieve code windows
-    → discover new symbols via pre-built relation graph (no re-grepping)
-      + import-edge traversal (byImports / byImporters)
-    → prioritize: query relevance (1e6) > exported (1e5) > kind (1e3)
-    → repeat until budget exhausted (frontier ≤ 20, per-file cap 50%)
-    → fill remaining budget with RAG (cosine similarity, MD files first)
-    → inject as context prefix to LLM message
-
-Query pipeline (--dir mode):
-  embed query → cosine similarity over index
-              → retrieve top 5 chunks
-              → build prompt with retrieved code
-              → stream response (buffered, typewriter output)
-```
-
-The LLM never reads files directly — all filesystem access happens in the kernel.
-The `search()` function is injected as a dependency so you can swap Ollama for
-OpenAI, sentence-transformers, or a null fallback (grep-only BFS).
-
-## Project Structure
-
-```
-@geniesh/kernel (packages/kernel/)     ← no LLM deps, pure Node
+geniesh/
 ├── src/
-│   ├── index.js              Barrel exports
-│   ├── fs-utils.js           Directory scanning, file reading, .genieshignore
-│   ├── symbol-utils.js       Symbol extraction (camelCase, PascalCase, etc.)
-│   ├── grep.js               Word-boundary grep with scope windows
-│   ├── graph-engine.js       AST graph builder, import resolution, alias-aware cross-file matching
-│   ├── relations.js          Relation graph builder + import-edge extraction + incremental re-index
-│   ├── chunker.js            Line-based code chunking
-│   ├── parsers/
-│   │   ├── index.js          Parser dispatch (tree-sitter WASM → native → generic)
-│   │   └── ts-based.js       Tree-sitter extractors: JS, TS, TSX, Python, Go, Rust,
-│   │                          Ruby, Swift, Java, Kotlin, C, C++, Zig, PHP
-│   └── context-builder.js    BFS traversal + budgeted retrieval + RAG merge
-│                              (accepts search() as dependency injection)
-└── package.json
-
-geniesh CLI (src/)
-├── cli.js              Entry point — all commands (injects search() into kernel)
-├── prompt.js           Prompt templates
-├── runner.js           Streaming Ollama LLM calls
-├── embedder.js         Ollama nomic-embed-text embedding
-├── search.js           Adapter: embed query → cosine similarity over index
-├── indexer.js          Full indexing pipeline (kernel + embedder + persistence)
-├── extractor.js        Named function extraction
-├── grep.js             Re-exports kernel grep + formatting helpers
-├── context-builder.js  Re-exports kernel context builder
-├── relations.js        Re-exports kernel relations + persistence helpers
-├── fs-utils.js         Re-exports kernel fs + extractFileRefs
-├── symbol-utils.js     Re-exports kernel symbol utils
-├── chunker.js          Re-exports kernel chunker
-├── md-parser.js        Markdown formatting
-└── spinners-ora.js     Terminal spinner animations
+│   ├── cli.js              Entry point, chat loop, command dispatch
+│   ├── genx.js             Context pipeline: calls mapx, builds context doc
+│   ├── diff-apply.js       SEARCH/REPLACE edit parser + apply
+│   ├── runner.js           Streaming Ollama LLM calls
+│   ├── prompt.js           System prompt templates
+│   ├── embedder.js         Ollama embedding
+│   ├── search.js           Cosine-similarity search over RAG index
+│   ├── indexer.js          Build/load RAG index
+│   └── ...
+├── packages/kernel/        Pure code navigation (no LLM deps)
+│   └── src/
+│       ├── parsers/        Tree-sitter + generic symbol extractors
+│       ├── grep.js         Word-boundary grep
+│       └── ...
+└── genx/                   Python adapter (deprecated, kept for reference)
 ```
 
-## The Alchemy Behind This
+### How context is built (`/context` command)
 
-> *How a human wrestled a chorus of AI ghosts into writing a tool that writes code.*
+1. **mapx** (separate Rust binary) — BM25 symbol search + call-graph extraction via grep
+2. **genx.js** — reads mapx JSON output, pulls code snippets around matched lines, assembles a context document with preamble + history
+3. **LLM** — receives the context doc as a system prefix, answers with full file/line references
 
-This project wasn't designed. It was **evolved** — through a chaotic, recursive loop of:
+The history (`.genx_history.md`) accumulates across sessions and is optionally compressed when it exceeds 80% of the context window (`--compress-model`).
 
-- **AI hallucination roulette** — Copilot, Claude, Llama, and geniesh itself all took the wheel at different points. Each one confidently generated wrong code in its own unique way. The secret? Let them all hallucinate, then pick the pieces that don't burst into flames.
+### Options
 
-- **Self-improvement agents feeding on themselves** — geniesh was used to debug its own source code. The tool wrote parts of itself, then we asked it to find bugs in what it wrote. It found them. We fixed them. It wrote tests. We ran them. The snake ate its tail and grew scales.
+```
+geniesh chat --model qwen3-coder       # default
+geniesh chat --compress-model llama3.1  # history summarizer model
+geniesh chat --full-index               # pre-build RAG index at startup
+geniesh --embedder mxbai-embed-large chat
+```
 
-- **Test, test, test** — 106 tests and counting. Every change, no matter how small, runs the gauntlet. If the tests pass, the change survives. If they don't, it gets fed back to the model with the error message. Repeat until green.
-
-- **Manual error archaeology** — For every clean commit you see, there were 10 dirty ones that got squashed. The workflow: generate → break → read the stack trace → curse → fix → repeat. Six years of professional debugging instinct plus an embarrassing amount of classical philosophy (Stoic shrug at failed builds, Hegelian dialectic of thesis → AI hallucination → synthesis).
-
-The result is a tool that works, but more importantly, a process that *improves itself*. geniesh is not a finished product — it's a method for turning AI noise into signal through relentless empirical validation.
-
-If you want to contribute, don't write code. Write tests. Then make them pass.
-
----
-
-## Notes
-
-- `geniesh-index.json`, `geniesh-relations.json`, and `monolog/` are excluded from git by default.
-- `.genieshignore` — create this file in the project root with `.gitignore`-style patterns to exclude files/directories from indexing (comments with `#`, negation with `!`, anchored with `/`, dir-only with trailing `/`).
-- The `geniesh-relations.json` graph persists across sessions. Re-running `geniesh index` performs an **incremental merge** — only files whose content changed (detected by mtime+size hash) are re-scanned, and stale symbols are pruned. A fresh build happens when no previous graph exists.
-- Ollama must be running (`ollama serve`) before using any command.
-- Context budget is capped at 10,000 characters per turn.
-- Minified files (`.min.js`, `.min.css`) are automatically skipped during indexing.
-- The relation graph uses `Object.hasOwn()` for map-entry checks to avoid Object.prototype property collisions (e.g. `toString`, `constructor`).
+No config files. No API keys. Just Ollama running in the background.

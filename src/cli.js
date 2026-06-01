@@ -22,7 +22,7 @@ import { webSearch, formatSearchResults } from './web-search.js';
 function applySlideWindow(messages, maxTurns = 8) {
   while (messages.length > 1 + maxTurns * 2) messages.splice(1, 2);
 }
-import { parseFileEdits, formatDiff, formatSearchReplaceDiff, applySearchReplace, applyFullFileEdit } from './diff-apply.js';
+import { parseFileEdits, formatDiff, formatSearchReplaceDiff, applySearchReplace } from './diff-apply.js';
 import { parseShellCommands, runShellCommand } from './terminal-agent.js';
 import { execSync } from 'child_process';
 import ora from 'ora';
@@ -129,20 +129,14 @@ async function handleEdits(reply, ask) {
   let allFiles = [];
   try { allFiles = await scanDir(process.cwd()); } catch { /* non-fatal */ }
 
-  const edits = parseFileEdits(reply, allFiles);
+  const edits = parseFileEdits(reply, allFiles).filter(e => e.type === 'sr');
   let lastEditError = null;
 
   for (const edit of edits) {
     let diff, apply, originalContent;
-    if (edit.type === 'sr') {
-      originalContent = await readFile(edit.file).catch(() => '');
-      diff = formatSearchReplaceDiff(edit.file, edit.search, edit.replace, originalContent);
-      apply = () => applySearchReplace(edit.file, edit.search, edit.replace);
-    } else {
-      originalContent = await readFile(edit.file).catch(() => '');
-      diff = formatDiff(originalContent, edit.content, edit.file);
-      apply = () => applyFullFileEdit(edit.file, edit.content);
-    }
+    originalContent = await readFile(edit.file).catch(() => '');
+    diff = formatSearchReplaceDiff(edit.file, edit.search, edit.replace, originalContent);
+    apply = () => applySearchReplace(edit.file, edit.search, edit.replace);
     if (!diff) continue;
     process.stdout.write(`\n${diff}\n`);
     const ans = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
@@ -332,11 +326,11 @@ program
           if (this._in) {
             const end = this._buf.indexOf('\x1b[201~');
             if (end === -1) {
-              this.push(this._buf.replace(/\n/g, '\x00'));
+              this.push(this._buf.replace(/\n/g, '\v'));
               this._buf = '';
             } else {
-              const block = this._buf.slice(0, end).replace(/\n/g, '\x00');
-              this.push(block + '\n');
+              const block = this._buf.slice(0, end).replace(/\n/g, '\v');
+              this.push(block);
               this._buf = this._buf.slice(end + 6);
               this._in = false;
             }
@@ -364,8 +358,8 @@ program
     let inputResolve = null;
 
     rl.on('line', (line) => {
-      // \x00 was substituted for \n inside a paste by the transform above
-      const actual = line.replace(/\x00/g, '\n');
+      // \v was substituted for \n inside a paste by the transform above
+      const actual = line.replace(/\v/g, '\n');
       if (inputResolve) {
         const r = inputResolve;
         inputResolve = null;
@@ -394,6 +388,7 @@ program
     console.log('\x1b[90m   /search "query"              Search DuckDuckGo + fetch top pages\x1b[0m');
     console.log('\x1b[90m   /file "path1, path2"         Load full file(s) into context\x1b[0m');
     console.log('\x1b[90m   /ctx|/context "symbol1, symbol2"  Run genx with exactly these symbols\x1b[0m');
+    console.log('\x1b[90m   /edit                       Enable SEARCH/REPLACE edit approval\x1b[0m');
     console.log('\x1b[90m   https://...                 Paste a URL — page is fetched automatically\x1b[0m');
     console.log('\x1b[90m   exit  or  Ctrl+C            Quit\x1b[0m');
     console.log('');
@@ -545,8 +540,10 @@ program
         // Signal handling (REQUERY / REQUERY_INTERNET / bash)
         reply = await handleSignals(reply, messages, dir, ask, { compressModel });
 
-        // Edit detection
-        await handleEdits(reply, ask);
+        // Edit detection — only on explicit /edit command
+        if (/\b\/edit\b/.test(trimmed)) {
+          await handleEdits(reply, ask);
+        }
       } catch (err) {
         console.error(`\nError: ${err.message}`);
         messages.pop();
