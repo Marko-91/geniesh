@@ -6,7 +6,7 @@ import { resolve } from 'path';
 import { join } from 'path';
 import { createRequire } from 'module';
 import { readFile } from './fs-utils.js';
-import { writeFile, appendFile } from 'fs/promises';
+import { writeFile, appendFile, readFile as fsReadFile } from 'fs/promises';
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 import { extractFunction } from './extractor.js';
@@ -15,13 +15,12 @@ import { search } from './search.js';
 import { buildPrompt, buildDirectPrompt, SYSTEM_RULES } from './prompt.js';
 import { runQuery, runChat, runGenerate, setModel } from './runner.js';
 import { setEmbedder } from './embedder.js';
-import { runEval, formatEvalResults } from './eval.js';
-import { generateBenchmark } from './benchmark-gen.js';
-import { runSelfImprove } from './autoimprove/auto-improve.js';
 import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 import { extractUrls, fetchWebContent } from './web-fetch.js';
 import { webSearch, formatSearchResults } from './web-search.js';
-import { buildChatContext, applySlideWindow } from './context-builder.js';
+function applySlideWindow(messages, maxTurns = 8) {
+  while (messages.length > 1 + maxTurns * 2) messages.splice(1, 2);
+}
 import { parseFileEdits, formatDiff, formatSearchReplaceDiff, applySearchReplace, applyFullFileEdit } from './diff-apply.js';
 import { parseShellCommands, runShellCommand } from './terminal-agent.js';
 import { execSync, spawnSync } from 'child_process';
@@ -40,21 +39,22 @@ const GENX_HISTORY = process.env.GENX_HISTORY
 /**
  * Run genx and return the full context markdown string (stdout).
  */
-async function runGenx(query, task, root, { compressModel } = {}) {
+function runGenx(query, task, root, { compressModel } = {}) {
   const historyPath = join(root, '.genx_history.md');
   const args = [GENX_SCRIPT, query, '--root', root, '--history', historyPath];
-  if (task) { args.push('--task', task); }
-  if (compressModel) { args.push('--compress-model', compressModel); }
+  if (task) args.push('--task', task);
+  if (compressModel) args.push('--compress-model', compressModel);
 
   const result = spawnSync(GENX_BIN, args, {
     encoding: 'utf-8',
     timeout: 120_000,
     maxBuffer: 20 * 1024 * 1024,
     cwd: root,
+    stdio: ['pipe', 'pipe', 'inherit'],
   });
 
   if (result.error) throw new Error(`genx failed: ${result.error.message}`);
-  if (result.status !== 0) throw new Error(`genx exited ${result.status}: ${(result.stderr || '').slice(0, 400)}`);
+  if (result.status !== 0) throw new Error(`genx exited ${result.status}`);
   return result.stdout || '';
 }
 
@@ -361,6 +361,11 @@ program
 
     process.on('SIGINT', () => { console.log('\nBye!'); rl.close(); process.exit(0); });
 
+    // Load genx history from previous sessions — no genx call, just file read
+    let historyContent = '';
+    const historyPath = join(dir, '.genx_history.md');
+    try { historyContent = await fsReadFile(historyPath, 'utf-8'); } catch { /* no history yet */ }
+
     while (true) {
       let userInput;
       try { userInput = await ask('\x1b[32mYou\x1b[0m: '); } catch { break; }
@@ -449,28 +454,10 @@ program
         }
       }
 
-      // Query for genx — /context (or /ctx) overrides; any other slash command skips genx
-      let genxQuery = ctxMatch ? ctxMatch[1].trim() : questionText;
-      if (!ctxMatch && ragIndex && !hasSlashCmd) {
-        const isProse = trimmed.includes(' ') && !/[A-Z_]/.test(trimmed.replace(/\s/g, ''));
-        if (isProse) {
-          try {
-            const candidates = await search(trimmed, ragIndex, 5);
-            const idRe = /\b([a-z][a-zA-Z0-9]{2,}[A-Z][a-zA-Z0-9]*|[A-Z][a-z]+[A-Z][a-zA-Z0-9]*)\b/g;
-            const found = new Set();
-            for (const c of candidates) for (const m of (c.chunk || '').matchAll(idRe)) found.add(m[1]);
-            if (found.size > 0) {
-              const discovered = [...found].slice(0, 6).join(' ');
-              process.stderr.write(`\x1b[90m[geniesh] discovered: ${discovered}\x1b[0m\n`);
-              genxQuery = discovered;
-            }
-          } catch { /* non-fatal */ }
-        }
-      }
-
-      // Run genx (skip for plain slash commands; /context or /ctx explicitly triggers it)
+      // genx context — only on explicit /context or /ctx command
       let contextMd = '';
-      if (!hasSlashCmd || ctxMatch) {
+      if (ctxMatch) {
+        const genxQuery = ctxMatch[1].trim();
         const cs = ora({ text: `[geniesh] running genx: ${genxQuery.slice(0, 60)}…`, color: 'cyan' }).start();
         try {
           contextMd = await runGenx(genxQuery, '', dir, { compressModel });
@@ -607,43 +594,6 @@ program
       setModel(primary);
       console.log();
     } catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
-  });
-
-// ─── eval ─────────────────────────────────────────────────────────────────────
-
-program
-  .command('eval')
-  .description('Evaluate retrieval quality against a benchmark suite')
-  .requiredOption('--benchmark <file>', 'Benchmark JSON file')
-  .requiredOption('--dir <path>', 'Codebase directory')
-  .option('--verbose', 'Print per-benchmark details')
-  .action(async (opts) => {
-    try { console.log(formatEvalResults(await runEval(opts.benchmark, opts.dir, !!opts.verbose))); }
-    catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
-  });
-
-// ─── benchmark ────────────────────────────────────────────────────────────────
-
-const bm = program.command('benchmark').description('Generate and manage benchmark suites');
-bm.command('generate')
-  .description('Auto-generate a benchmark suite')
-  .requiredOption('--dir <path>', 'Codebase directory')
-  .option('--output <file>', 'Output file', 'geniesh-benchmark.json')
-  .option('--model <name>', 'Ollama model')
-  .action(async (opts) => {
-    try { await generateBenchmark(opts.output, opts.dir, opts.model || program.opts().model); }
-    catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
-  });
-
-// ─── self-improve ─────────────────────────────────────────────────────────────
-
-program
-  .command('self-improve')
-  .description('Run the self-improvement loop: eval → analyze → fix → retest → repeat')
-  .argument('[iterations]', 'Maximum iterations (default 5)', parseInt)
-  .action(async (iterations) => {
-    try { await runSelfImprove(iterations); }
-    catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
   });
 
 program.parseAsync(process.argv);

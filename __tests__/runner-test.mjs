@@ -1,29 +1,8 @@
 import { jest } from '@jest/globals';
 import { setModel, getModel, runQuery, runChat } from '../src/runner.js';
-import { formatMarkdown } from '../src/md-parser.js';
 import { spinners } from '../src/spinners-ora.js';
 
 // Mock dependencies
-jest.mock('../src/md-parser.js', () => {
-  class MockStreamingMarkdownParser {
-    constructor() { this._buf = ''; }
-    feed(token, write) {
-      this._buf += token;
-      let idx;
-      while ((idx = this._buf.indexOf('\n')) !== -1) {
-        write(this._buf.slice(0, idx) + '\n');
-        this._buf = this._buf.slice(idx + 1);
-      }
-    }
-    flush(write) {
-      if (this._buf) { write(this._buf); this._buf = ''; }
-    }
-  }
-  return {
-    StreamingMarkdownParser: MockStreamingMarkdownParser,
-    formatMarkdown: jest.fn((text) => text),
-  };
-});
 jest.mock('../src/spinners-ora.js', () => ({
   spinners: ['dots'],
 }));
