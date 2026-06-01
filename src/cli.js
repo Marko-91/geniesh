@@ -23,40 +23,9 @@ function applySlideWindow(messages, maxTurns = 8) {
 }
 import { parseFileEdits, formatDiff, formatSearchReplaceDiff, applySearchReplace, applyFullFileEdit } from './diff-apply.js';
 import { parseShellCommands, runShellCommand } from './terminal-agent.js';
-import { execSync, spawnSync } from 'child_process';
+import { execSync } from 'child_process';
 import ora from 'ora';
-
-// ---------------------------------------------------------------------------
-// genx integration
-// ---------------------------------------------------------------------------
-
-const GENX_BIN = process.env.GENX_BIN || 'python3';
-const GENX_SCRIPT = process.env.GENX_SCRIPT
-  || join(process.env.HOME || '~', 'projects', 'mapx', 'genx', 'main.py');
-const GENX_HISTORY = process.env.GENX_HISTORY
-  || join(process.env.HOME || '~', '.genx_history.md');
-
-/**
- * Run genx and return the full context markdown string (stdout).
- */
-function runGenx(query, task, root, { compressModel } = {}) {
-  const historyPath = join(root, '.genx_history.md');
-  const args = [GENX_SCRIPT, query, '--root', root, '--history', historyPath];
-  if (task) args.push('--task', task);
-  if (compressModel) args.push('--compress-model', compressModel);
-
-  const result = spawnSync(GENX_BIN, args, {
-    encoding: 'utf-8',
-    timeout: 120_000,
-    maxBuffer: 20 * 1024 * 1024,
-    cwd: root,
-    stdio: ['pipe', 'pipe', 'inherit'],
-  });
-
-  if (result.error) throw new Error(`genx failed: ${result.error.message}`);
-  if (result.status !== 0) throw new Error(`genx exited ${result.status}`);
-  return result.stdout || '';
-}
+import { runGenx } from './genx.js';
 
 /**
  * Append a web-search entry to the shared genx history file.
@@ -74,7 +43,8 @@ async function appendWebHistory(query, results, fetchedContent) {
     `**Fetched**: ${ts}\n` +
     `**Results**: ${results.map(r => r.url).join(', ')}\n\n` +
     snippetBlock + contentBlock + '\n';
-  try { await appendFile(GENX_HISTORY, entry, 'utf-8'); } catch { /* non-fatal */ }
+  const historyPath = process.env.GENX_HISTORY || join(process.env.HOME || '~', '.genx_history.md');
+  try { await appendFile(historyPath, entry, 'utf-8'); } catch { /* non-fatal */ }
 }
 
 /**
