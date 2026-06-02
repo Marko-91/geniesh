@@ -120,14 +120,20 @@ async function appendWebHistory(query, results, fetchedContent) {
  */
 async function handleSignals(reply, messages, root, ask, { maxIter = 3, compressModel = '' } = {}) {
   let current = reply;
+  const queried = new Set();
   for (let i = 0; i < maxIter; i++) {
     // REQUERY
     const rq = current.match(/^REQUERY\s+(.+)$/m);
     if (rq) {
       const symbols = rq[1].trim();
+      if (queried.has(symbols)) {
+        process.stderr.write(`\x1b[33m[geniesh] already queried "${symbols}" — breaking loop\x1b[0m\n`);
+        break;
+      }
+      queried.add(symbols);
       process.stderr.write(`\x1b[33m[geniesh] ↺ REQUERY: ${symbols} — fetching context…\x1b[0m\n`);
       let extra = '';
-      try { extra = await runGenx(symbols, '', root, { compressModel }); }
+      try { extra = (await runGenx(symbols, '', root, { compressModel })).content; }
       catch (err) { process.stderr.write(`\x1b[31m[geniesh] REQUERY failed: ${err.message}\x1b[0m\n`); break; }
       messages.push({ role: 'user', content: `[Context update for: ${symbols}]\n\n${extra}\n\nContinue your response using this additional context.` });
       process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
@@ -288,10 +294,12 @@ async function handleEdits(reply, ask, root) {
             const head = lines.slice(0, si).join('\n');
             const tail = lines.slice(ei + 1).join('\n');
             const fullNew = (head ? head + '\n' : '') + srEdit.replace + (tail ? '\n' + tail : '');
-            process.stdout.write(`\n\x1b[33m⚠ Exact text not found — replacing function \x1b[1m${funcName}\x1b[0m instead\x1b[0m\n`);
-            const diff = formatDiff(old, fullNew, srEdit.file);
-            if (diff) process.stdout.write(`\n${diff}\n`);
-            const ans2 = await ask(`Apply replacement for \x1b[1m${funcName}\x1b[0m in ${srEdit.file}? [\x1b[1mY\x1b[0m/n] `);
+            process.stdout.write(`\n\x1b[33m⚠ Exact text not found — replacing function \x1b[1m${funcName}\x1b[0m in ${srEdit.file}\x1b[0m\n`);
+            // Show a surgical diff: only the old function body → new function body
+            const oldFunc = lines.slice(si, ei + 1).join('\n');
+            const funDiff = formatSearchReplaceDiff(srEdit.file, oldFunc, srEdit.replace, old);
+            process.stdout.write(funDiff ? `\n${funDiff}\n` : '\n');
+            const ans2 = await ask(`Apply this change? [\x1b[1mY\x1b[0m/n] `);
             if (!ans2 || ans2.toLowerCase() === 'y' || ans2 === '') {
               try {
                 await writeFile(srEdit.file, fullNew);
@@ -673,8 +681,22 @@ program
         const genxQuery = ctxMatch[1].trim();
         const cs = ora({ text: `[geniesh] running genx: ${genxQuery.slice(0, 60)}…`, color: 'cyan' }).start();
         try {
-          contextMd = await runGenx(genxQuery, '', dir, { compressModel });
+          const genxResult = await runGenx(genxQuery, '', dir, { compressModel });
+          contextMd = genxResult.content;
           cs.succeed(`[geniesh] context: ${Math.round(contextMd.length / 4).toLocaleString()} tok`);
+          // Auto-load top hit files from genx
+          if (genxResult.hitFiles && genxResult.hitFiles.length > 0) {
+            const loadParts = [];
+            for (const f of genxResult.hitFiles) {
+              const absPath = f.startsWith('/') ? f : join(dir, f);
+              const content = await readFile(absPath).catch(() => null);
+              if (content) {
+                loadParts.push(`// file-ref: ${f}\n${content}`);
+                process.stderr.write(`\x1b[90m[geniesh] auto-loaded ${f} (${Math.round(content.length / 4).toLocaleString()} tok)\x1b[0m\n`);
+              }
+            }
+            if (loadParts.length) fileContent = (fileContent ? fileContent + '\n\n' : '') + loadParts.join('\n\n');
+          }
         } catch (err) {
           cs.warn(`[geniesh] genx failed (${err.message}) — proceeding without code context`);
         }
@@ -690,7 +712,14 @@ program
       if (webContent) parts.push(`[Web page content]\n${webContent}`);
       parts.push(`Question: ${question}`);
       if (hasEditCmd) {
-        parts.push('Output each edit as: FILE_PATH\nSEARCH\n<old code>\nREPLACE\n<new code>. Do NOT use <<<<<<<, =======, >>>>>>>, or ``` markers.');
+        parts.push(
+          'Output each edit as: FILE_PATH\nSEARCH\n<old code>\nREPLACE\n<new code>. ' +
+          'Do NOT use <<<<<<<, =======, >>>>>>>, or ``` markers.\n' +
+          'CRITICAL: The SEARCH block must be copied CHARACTER-FOR-CHARACTER ' +
+          'from the file content provided above. Every space, indent, ' +
+          'and newline must match exactly. Do not reformat or paraphrase ' +
+          'the existing code.'
+        );
       }
 
       // Compact if approaching context limit

@@ -51,7 +51,10 @@ Output these exactly and they will be detected and applied:
    function greet(name) {
      return 'Hi, ' + name;
    }
-   The SEARCH text must match the EXISTING file content exactly.
+   CRITICAL: The SEARCH text must be COPIED CHARACTER-FOR-CHARACTER
+   from the file content above. Every space, indent, and newline must
+   match exactly. If even one character differs, the edit will fail.
+   Do NOT rewrite, reformat, or paraphrase the SEARCH text.
 
 2) Full-file rewrite:
    \`\`\`js:src/utils.js

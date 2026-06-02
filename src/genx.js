@@ -72,24 +72,32 @@ function readSnippet(fname, line, radius = SNIPPET_RADIUS) {
   }
 }
 
-function formatCallChain(callGraph, querySymbols) {
+function formatCallChain(callGraph, querySymbols, tagNames = []) {
   if (!callGraph) return '';
   const byCaller = {};
+  const byCallee = {};
   for (const edge of callGraph) {
     const caller = edge.caller || '';
     const callee = edge.callee || '';
     if (caller && callee) {
       (byCaller[caller] ||= []).push(callee);
+      (byCallee[callee] ||= []).push(caller);
     }
   }
+  // Match against both query symbols and tag names found by mapx
+  const allNames = [...new Set([...querySymbols, ...tagNames])];
+  const matched = allNames.filter(s => byCaller[s] || byCallee[s]);
   const lines = [];
-  for (const sym of querySymbols) {
-    const matched = Object.keys(byCaller).filter(k => k.toLowerCase() === sym.toLowerCase());
-    for (const caller of matched) {
-      const callees = byCaller[caller];
-      let line = `${caller} → ${callees.slice(0, 8).join(', ')}`;
-      if (callees.length > 8) line += ` … (+${callees.length - 8} more)`;
-      lines.push(line);
+  for (const sym of matched) {
+    const calls = byCaller[sym];
+    const calledBy = byCallee[sym];
+    if (calledBy) {
+      lines.push(`${calledBy.slice(0, 8).join(', ')} → ${sym}`);
+      if (calledBy.length > 8) lines[lines.length - 1] += ` … (+${calledBy.length - 8} more)`;
+    }
+    if (calls) {
+      lines.push(`${sym} → ${calls.slice(0, 8).join(', ')}`);
+      if (calls.length > 8) lines[lines.length - 1] += ` … (+${calls.length - 8} more)`;
     }
   }
   return lines.join('\n');
@@ -198,7 +206,8 @@ function filterHistoryBySymbols(history, symbols) {
 
 function buildContextSection(tags, callGraph, query, task, root) {
   const symbols = extractSymbols(query);
-  const callChain = formatCallChain(callGraph, symbols);
+  const tagNames = [...new Set(tags.map(t => t.name).filter(Boolean))];
+  const callChain = formatCallChain(callGraph, symbols, tagNames);
 
   const lines = [`## Context: ${query}`];
   if (task) lines.push(`**Task**: ${task}`);
@@ -399,7 +408,21 @@ export async function runGenx(query, task, root, { compressModel, model, window 
     '',
   ].join('\n');
 
-  return preamble + body;
+  // Scan tags in score-order, pick the first 5 unique files (not just top 5 tags)
+  const seenFiles = new Set();
+  const hitFileList = [];
+  for (const tag of tags) {
+    if (tag.rel_fname && !seenFiles.has(tag.rel_fname)) {
+      seenFiles.add(tag.rel_fname);
+      hitFileList.push(tag.rel_fname);
+      if (hitFileList.length >= 5) break;
+    }
+  }
+
+  return {
+    content: preamble + body,
+    hitFiles: hitFileList,
+  };
 }
 
 export async function printHistory(historyPath, { symbols } = {}) {
