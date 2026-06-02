@@ -118,53 +118,55 @@ async function appendWebHistory(query, results, fetchedContent) {
  * Handle REQUERY / REQUERY_INTERNET / bash signals in the latest LLM reply.
  * Mutates messages[], calls runChat(), returns final reply.
  */
-async function handleSignals(reply, messages, root, ask, { maxIter = 3, compressModel = '' } = {}) {
+async function handleSignals(reply, messages, root, ask, { maxIter = 3, compressModel = '', requery = false } = {}) {
   let current = reply;
   const queried = new Set();
   for (let i = 0; i < maxIter; i++) {
-    // REQUERY
-    const rq = current.match(/^REQUERY\s+(.+)$/m);
-    if (rq) {
-      const symbols = rq[1].trim();
-      if (queried.has(symbols)) {
-        process.stderr.write(`\x1b[33m[geniesh] already queried "${symbols}" — breaking loop\x1b[0m\n`);
-        break;
-      }
-      queried.add(symbols);
-      process.stderr.write(`\x1b[33m[geniesh] ↺ REQUERY: ${symbols} — fetching context…\x1b[0m\n`);
-      let extra = '';
-      try { extra = (await runGenx(symbols, '', root, { compressModel })).content; }
-      catch (err) { process.stderr.write(`\x1b[31m[geniesh] REQUERY failed: ${err.message}\x1b[0m\n`); break; }
-      messages.push({ role: 'user', content: `[Context update for: ${symbols}]\n\n${extra}\n\nContinue your response using this additional context.` });
-      process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
-      current = await runChat(messages);
-      messages.push({ role: 'assistant', content: current });
-      continue;
-    }
-
-    // REQUERY_INTERNET
-    const ri = current.match(/^REQUERY_INTERNET\s+(.+)$/m);
-    if (ri) {
-      const q = ri[1].trim();
-      process.stderr.write(`\x1b[33m[geniesh] ↺ REQUERY_INTERNET: "${q}" — searching…\x1b[0m\n`);
-      let webBlock = '';
-      try {
-        const results = await webSearch(q, 3);
-        let fetched = '';
-        if (results.length > 0) {
-          const pages = await Promise.allSettled(results.slice(0, 2).map(r => fetchWebContent(r.url)));
-          fetched = pages.filter(p => p.status === 'fulfilled').map(p => p.value).join('\n\n---\n\n');
-          await appendWebHistory(q, results, fetched);
+    // REQUERY (disabled by default — enable with --requery flag)
+    if (requery) {
+      const rq = current.match(/^REQUERY\s+(.+)$/m);
+      if (rq) {
+        const symbols = rq[1].trim();
+        if (queried.has(symbols)) {
+          process.stderr.write(`\x1b[33m[geniesh] already queried "${symbols}" — breaking loop\x1b[0m\n`);
+          break;
         }
-        webBlock = `[Web page content]\nSearch: "${q}"\n\n` +
-          formatSearchResults(results) +
-          (fetched ? `\n\n--- Fetched pages ---\n${fetched}` : '');
-      } catch (err) { webBlock = `[Web search failed: ${err.message}]`; }
-      messages.push({ role: 'user', content: webBlock + '\n\nContinue your response using this web content.' });
-      process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
-      current = await runChat(messages);
-      messages.push({ role: 'assistant', content: current });
-      continue;
+        queried.add(symbols);
+        process.stderr.write(`\x1b[33m[geniesh] ↺ REQUERY: ${symbols} — fetching context…\x1b[0m\n`);
+        let extra = '';
+        try { extra = (await runGenx(symbols, '', root, { compressModel })).content; }
+        catch (err) { process.stderr.write(`\x1b[31m[geniesh] REQUERY failed: ${err.message}\x1b[0m\n`); break; }
+        messages.push({ role: 'user', content: `[Context update for: ${symbols}]\n\n${extra}\n\nContinue your response using this additional context.` });
+        process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
+        current = await runChat(messages);
+        messages.push({ role: 'assistant', content: current });
+        continue;
+      }
+
+      // REQUERY_INTERNET
+      const ri = current.match(/^REQUERY_INTERNET\s+(.+)$/m);
+      if (ri) {
+        const q = ri[1].trim();
+        process.stderr.write(`\x1b[33m[geniesh] ↺ REQUERY_INTERNET: "${q}" — searching…\x1b[0m\n`);
+        let webBlock = '';
+        try {
+          const results = await webSearch(q, 3);
+          let fetched = '';
+          if (results.length > 0) {
+            const pages = await Promise.allSettled(results.slice(0, 2).map(r => fetchWebContent(r.url)));
+            fetched = pages.filter(p => p.status === 'fulfilled').map(p => p.value).join('\n\n---\n\n');
+            await appendWebHistory(q, results, fetched);
+          }
+          webBlock = `[Web page content]\nSearch: "${q}"\n\n` +
+            formatSearchResults(results) +
+            (fetched ? `\n\n--- Fetched pages ---\n${fetched}` : '');
+        } catch (err) { webBlock = `[Web search failed: ${err.message}]`; }
+        messages.push({ role: 'user', content: webBlock + '\n\nContinue your response using this web content.' });
+        process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
+        current = await runChat(messages);
+        messages.push({ role: 'assistant', content: current });
+        continue;
+      }
     }
 
     // bash blocks
@@ -383,6 +385,7 @@ program
   .option('--dir <path>', 'Project root passed to genx (default: cwd)')
   .option('--full-index', 'Pre-build RAG index for vague-query symbol discovery')
   .option('--compress-model <name>', 'Ollama model for genx history compression (e.g. llama3:latest)')
+  .option('--requery', 'Enable auto-REQUERY: LLM can request deeper code context via REQUERY keyword')
   .action(async (opts) => {
     const dir = resolve(opts.dir || process.cwd());
     const compressModel = opts.compressModel || '';
@@ -424,7 +427,9 @@ program
         `You are running on: ${lampInfo}\nModel: ${modelName}\n\n` +
         SYSTEM_RULES +
         '\n\nTips: NEVER say you "cannot" make changes. Output edit blocks — they will be applied automatically.\n' +
-        'After running a command you will see its output and can continue.\nBe concise and practical.',
+        'After running a command you will see its output and can continue.\nBe concise and practical.\n' +
+        'NOTE: The REQUERY mechanism is DISABLED. Every file you need is already in your context. ' +
+        'Do not respond with "I don\'t have access" — the source code is above. Re-read carefully.',
     }];
 
     const modelInfo = await getModelInfo(modelName).catch(() => ({ contextLength: 32768 }));
@@ -543,8 +548,8 @@ program
     console.log('\x1b[90m   • Ask to run commands:      "run the tests and show me failures"\x1b[0m');
     console.log('');
     console.log('\x1b[90m How the LLM gets more context:\x1b[0m');
-    console.log('\x1b[90m   • REQUERY <symbols>         LLM asks for deeper code context automatically\x1b[0m');
-    console.log('\x1b[90m   • REQUERY_INTERNET <query>  LLM searches the web for external docs\x1b[0m');
+    console.log('\x1b[90m   • REQUERY <symbols>         (pass --requery to enable) LLM fetches deeper code context\x1b[0m');
+    console.log('\x1b[90m   • REQUERY_INTERNET <query>  (pass --requery to enable) LLM searches the web\x1b[0m');
     console.log('\x1b[90m   • ```bash blocks            LLM runs commands — you approve each one\x1b[0m');
     console.log('\x1b[90m   • Edits shown as diffs — you approve before they are applied\x1b[0m\n');
 
@@ -652,7 +657,7 @@ program
           const absPath = p.startsWith('/') ? p : join(dir, p);
           const content = await readFile(absPath).catch(() => null);
           if (content) {
-            parts.push(`// file-ref: ${p}\n${content}`);
+            parts.push(`## File: ${p}\n\n\`\`\`\n${content}\`\`\``);
             process.stderr.write(`\x1b[90m[geniesh] loaded ${p} (${Math.round(content.length / 4).toLocaleString()} tok)\x1b[0m\n`);
           } else {
             process.stderr.write(`\x1b[31m[geniesh] could not read ${p}\x1b[0m\n`);
@@ -691,7 +696,7 @@ program
               const absPath = f.startsWith('/') ? f : join(dir, f);
               const content = await readFile(absPath).catch(() => null);
               if (content) {
-                loadParts.push(`// file-ref: ${f}\n${content}`);
+                loadParts.push(`## File: ${f}\n\n\`\`\`\n${content}\`\`\``);
                 process.stderr.write(`\x1b[90m[geniesh] auto-loaded ${f} (${Math.round(content.length / 4).toLocaleString()} tok)\x1b[0m\n`);
               }
             }
@@ -743,7 +748,7 @@ program
         process.stderr.write(`\x1b[90m[tok: ${budgetTokens.toLocaleString()} / ${contextLimit.toLocaleString()} ${bcolor}${bpct}%\x1b[0m\x1b[90m]\x1b[0m\n`);
 
         // Signal handling (REQUERY / REQUERY_INTERNET / bash)
-        reply = await handleSignals(reply, messages, dir, ask, { compressModel });
+        reply = await handleSignals(reply, messages, dir, ask, { compressModel, requery: !!opts.requery });
 
         // Edit detection — only on explicit /edit command
         if (hasEditCmd) {
