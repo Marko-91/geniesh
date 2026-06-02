@@ -424,12 +424,12 @@ program
     const messages = [{
       role: 'system',
       content:
-        `You are running on: ${lampInfo}\nModel: ${modelName}\n\n` +
-        SYSTEM_RULES +
-        '\n\nTips: NEVER say you "cannot" make changes. Output edit blocks — they will be applied automatically.\n' +
-        'After running a command you will see its output and can continue.\nBe concise and practical.\n' +
-        'NOTE: The REQUERY mechanism is DISABLED. Every file you need is already in your context. ' +
-        'Do not respond with "I don\'t have access" — the source code is above. Re-read carefully.',
+        'You answer code questions from provided source files.\n' +
+        'Read the files and answer the question.\n' +
+        'Be concise. Do not describe the tool or your role.\n' +
+        'Do not output examples, tips, meta-explanations, or large code dumps.\n' +
+        'If you cannot find the answer in the files, say so.\n' +
+        SYSTEM_RULES,
     }];
 
     const modelInfo = await getModelInfo(modelName).catch(() => ({ contextLength: 32768 }));
@@ -711,13 +711,18 @@ program
       let question = questionText || trimmed;
       for (const url of extractUrls(trimmed)) question = question.replace(url, 'the fetched page');
       question = question.replace(/\s+/g, ' ').trim();
-      const parts = [];
-      if (contextMd) parts.push(contextMd);
-      if (fileContent) parts.push(fileContent);
-      if (webContent) parts.push(`[Web page content]\n${webContent}`);
-      parts.push(`Question: ${question}`);
+
+      // Build user message: question first, then file content after.
+      // This puts the task at the front of the attention window.
+      const refLines = [];
+      if (contextMd) refLines.push(`--- context ---\n${contextMd}\n--- end context ---`);
+      if (fileContent) refLines.push(`--- files ---\n${fileContent}\n--- end files ---`);
+      if (webContent) refLines.push(`--- web ---\n${webContent}\n--- end web ---`);
+
+      const userParts = [question];
+      if (refLines.length) userParts.push(refLines.join('\n\n'));
       if (hasEditCmd) {
-        parts.push(
+        userParts.push(
           'Output each edit as: FILE_PATH\nSEARCH\n<old code>\nREPLACE\n<new code>. ' +
           'Do NOT use <<<<<<<, =======, >>>>>>>, or ``` markers.\n' +
           'CRITICAL: The SEARCH block must be copied CHARACTER-FOR-CHARACTER ' +
@@ -730,8 +735,8 @@ program
       // Compact if approaching context limit
       await compactMessagesIfNeeded(messages, { contextLimit, compressModel, modelName });
 
-      const userMsg = { role: 'user', content: parts.join('\n\n') };
-      msgMeta.set(userMsg, { rawParts: parts, question });
+      const userMsg = { role: 'user', content: userParts.join('\n\n') };
+      msgMeta.set(userMsg, { rawParts: userParts, question });
       messages.push(userMsg);
 
       // LLM call
