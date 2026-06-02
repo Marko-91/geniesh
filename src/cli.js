@@ -382,6 +382,7 @@ program
 program
   .command('chat')
   .description('Interactive coding chat powered by genx context pipeline')
+  .option('--model <name>', 'Ollama model for chat (default: qwen3-coder)')
   .option('--dir <path>', 'Project root passed to genx (default: cwd)')
   .option('--full-index', 'Pre-build RAG index for vague-query symbol discovery')
   .option('--compress-model <name>', 'Ollama model for genx history compression (e.g. llama3:latest)')
@@ -420,7 +421,7 @@ program
       }
     } catch {}
 
-    const modelName = program.opts().model || 'qwen3-coder';
+    const modelName = opts.model || program.opts().model || 'qwen3-coder';
     const messages = [{
       role: 'system',
       content:
