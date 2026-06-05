@@ -1,6 +1,5 @@
 import { readFile } from './fs-utils.js';
 import { parseFile, ensureTSParsers, SOURCE_EXTS } from './parsers/index.js';
-import { detectCommunities } from './community.js';
 import { chunkFile } from './chunker.js';
 import { extname, dirname, join } from 'path';
 import { stat } from 'fs/promises';
@@ -555,7 +554,7 @@ export async function buildGraph(dir, files, prevGraph = null, onProgress = null
     }
   }
 
-  graph.communityCount = detectCommunities(graph);
+  graph.communityCount = 0;
   const allFileHashes = new Map();
   for (const file of files) {
     const s = await statSafe(file);

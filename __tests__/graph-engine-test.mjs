@@ -49,10 +49,6 @@ jest.mock('../packages/kernel/src/parsers/index.js', () => {
   };
 });
 
-jest.mock('../packages/kernel/src/community.js', () => ({
-  detectCommunities: jest.fn(() => 3),
-}));
-
 jest.mock('../packages/kernel/src/chunker.js', () => ({
   chunkFile: jest.fn(() => []),
 }));

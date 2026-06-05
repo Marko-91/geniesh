@@ -15,7 +15,6 @@ import { buildPrompt, buildDirectPrompt } from './prompt.js';
 import { readFile } from './fs-utils.js';
 import { extractFunction } from './extractor.js';
 import { runQuery } from './runner.js';
-import { grepDir, formatGrepResults, buildGrepContext } from './grep.js';
 
 const program = new Command();
 await checkOllamaHealth();
@@ -55,25 +54,6 @@ program
       if (opts.file) await buildIndexFromFileList(opts.file);
       else if (opts.dir) await buildIndex(opts.dir);
       else throw new Error('Specify --dir or --file');
-    } catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
-  });
-
-program
-  .command('refs')
-  .description('Find usages of a symbol across a directory')
-  .argument('<name>', 'Symbol name')
-  .requiredOption('--dir <path>', 'Directory to search')
-  .option('--ask <question>', 'Ask the LLM about the usages')
-  .option('--explain', 'Explain the symbol and its usage')
-  .option('--context <lines>', 'Lines of context', (v) => parseInt(v, 10), 20)
-  .action(async (name, opts) => {
-    try {
-      const results = await grepDir(name, opts.dir, opts.context);
-      console.log(formatGrepResults(results, name));
-      const q = opts.ask || (opts.explain ? `Explain what "${name}" does and its usage patterns.` : null);
-      if (q && results.length) {
-        await runQuery(`You are a senior software engineer.\n\nContext:\n${buildGrepContext(results)}\n\nTask:\n${q}\n\nBe concise.`);
-      }
     } catch (err) { console.error(`\nError: ${err.message}`); process.exit(1); }
   });
 

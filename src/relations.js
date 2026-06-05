@@ -9,11 +9,6 @@ import { buildRelations as kernelBuildRelations } from '../packages/kernel/src/r
 import { CodeGraph } from '../packages/kernel/src/graph-engine.js';
 import { loadIgnoreFile } from '../packages/kernel/src/fs-utils.js';
 
-export {
-  fileRelationsToNames,
-  symbolRelationsToFiles,
-} from '../packages/kernel/src/relations.js';
-
 const GRAPH_FILE = 'geniesh-graph.json';
 
 export async function saveGraph(graph) {

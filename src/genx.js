@@ -119,7 +119,8 @@ function buildContextSection(tags, callGraph, query, root) {
     (byFile[tag.rel_fname] ||= []).push(tag);
   }
 
-  for (const [relFname, fileTags] of Object.entries(byFile)) {
+  const topFiles = Object.entries(byFile).slice(0, MAX_HIT_FILES);
+  for (const [relFname, fileTags] of topFiles) {
     const hitLines = [...new Set(fileTags.map(t => t.line))].sort((a, b) => a - b);
     const roles = [...new Set(fileTags.map(t => t.kind))].sort();
     const names = [...new Set(fileTags.map(t => t.name))].sort().join(', ');
