@@ -1,13 +1,10 @@
 import { execFileSync } from 'child_process';
 import { readFileSync } from 'fs';
-import { readFile, writeFile, appendFile } from 'fs/promises';
 import { join } from 'path';
-import { runGenerate } from './runner.js';
 
 const MAPX_BIN = process.env.MAPX_BIN || 'mapx';
 const SNIPPET_RADIUS = 20;
-const TOKEN_ESTIMATE_CHARS = 4;
-const COMPRESS_THRESHOLD = 0.80;
+const MAX_HIT_FILES = 5;
 
 const NOISE = new Set([
   'the', 'this', 'that', 'with', 'from', 'into', 'onto', 'over', 'under',
@@ -40,9 +37,7 @@ function runMapx(root, query, callGraph = false) {
     if (err.code === 'ENOENT') {
       throw new Error('mapx binary not found. Set MAPX_BIN env var or install mapx.');
     }
-    if (err.killed) {
-      throw new Error('mapx timed out after 120s');
-    }
+    if (err.killed) throw new Error('mapx timed out after 120s');
     const stderr = (err.stderr || '').slice(0, 400);
     throw new Error(`mapx exited ${err.status}: ${stderr}`);
   }
@@ -54,53 +49,6 @@ function runMapx(root, query, callGraph = false) {
   } catch (e) {
     throw new Error(`could not parse mapx output: ${e.message}\n${result.slice(0, 200)}`);
   }
-}
-
-function readSnippet(fname, line, radius = SNIPPET_RADIUS) {
-  try {
-    const allLines = readFileSync(fname, 'utf-8').split('\n');
-    const start = Math.max(0, line - 1 - radius);
-    const end = Math.min(allLines.length, line - 1 + radius + 1);
-    const snippetLines = allLines.slice(start, end);
-    const targetIdx = (line - 1) - start;
-    if (targetIdx >= 0 && targetIdx < snippetLines.length) {
-      snippetLines[targetIdx] = '▶ ' + snippetLines[targetIdx];
-    }
-    return snippetLines.join('\n').trimEnd();
-  } catch {
-    return `  <could not read ${fname}>`;
-  }
-}
-
-function formatCallChain(callGraph, querySymbols, tagNames = []) {
-  if (!callGraph) return '';
-  const byCaller = {};
-  const byCallee = {};
-  for (const edge of callGraph) {
-    const caller = edge.caller || '';
-    const callee = edge.callee || '';
-    if (caller && callee) {
-      (byCaller[caller] ||= []).push(callee);
-      (byCallee[callee] ||= []).push(caller);
-    }
-  }
-  // Match against both query symbols and tag names found by mapx
-  const allNames = [...new Set([...querySymbols, ...tagNames])];
-  const matched = allNames.filter(s => byCaller[s] || byCallee[s]);
-  const lines = [];
-  for (const sym of matched) {
-    const calls = byCaller[sym];
-    const calledBy = byCallee[sym];
-    if (calledBy) {
-      lines.push(`${calledBy.slice(0, 8).join(', ')} → ${sym}`);
-      if (calledBy.length > 8) lines[lines.length - 1] += ` … (+${calledBy.length - 8} more)`;
-    }
-    if (calls) {
-      lines.push(`${sym} → ${calls.slice(0, 8).join(', ')}`);
-      if (calls.length > 8) lines[lines.length - 1] += ` … (+${calls.length - 8} more)`;
-    }
-  }
-  return lines.join('\n');
 }
 
 function extractSymbols(query) {
@@ -120,97 +68,42 @@ function extractSymbols(query) {
   return symbols.slice(0, 8);
 }
 
-function parseHistoryDedupKeys(history) {
-  const keys = new Set();
-  let currentFile = '';
-  for (const line of history.split('\n')) {
-    if (line.startsWith('### ')) {
-      currentFile = line.slice(4).trim();
-    } else if (line.startsWith('> ') && currentFile) {
-      const m = line.match(/> (.+) \| score: (\d+) \| symbols: (.+)/);
-      if (m) {
-        const score = parseInt(m[2], 10);
-        for (const role of m[1].split(', ')) {
-          for (const symbol of m[3].split(', ')) {
-            keys.add(`${currentFile}||${symbol.trim()}||${role.trim()}||${score}`);
-          }
-        }
-      }
+function formatCallChain(callGraph, querySymbols, tagNames = []) {
+  if (!callGraph) return '';
+  const byCaller = {};
+  const byCallee = {};
+  for (const edge of callGraph) {
+    const caller = edge.caller || '';
+    const callee = edge.callee || '';
+    if (caller && callee) {
+      (byCaller[caller] ||= []).push(callee);
+      (byCallee[callee] ||= []).push(caller);
     }
   }
-  return keys;
-}
-
-function estimateTokens(text) {
-  return Math.floor(text.length / TOKEN_ESTIMATE_CHARS);
-}
-
-async function loadHistory(path) {
-  try {
-    return await readFile(path, 'utf-8');
-  } catch {
-    return '';
-  }
-}
-
-async function saveHistory(path, text) {
-  await writeFile(path, text, 'utf-8');
-}
-
-async function appendHistory(path, section) {
-  await appendFile(path, section, 'utf-8');
-}
-
-async function compressHistory(history, model) {
-  const prompt =
-    'You are compressing a code context history log.\n' +
-    'Rules:\n' +
-    '- Keep ALL file paths, line numbers, symbol names, function names, and call chains exactly as-is.\n' +
-    '- Compress or remove verbose prose and repeated explanations.\n' +
-    '- Preserve the markdown structure (## headers, ### subheaders, code blocks).\n' +
-    '- Do NOT invent new information.\n\n' +
-    'History to compress:\n\n' +
-    history;
-  return await runGenerate(prompt, model);
-}
-
-export async function compressConversation(messages, model) {
+  const allNames = [...new Set([...querySymbols, ...tagNames])];
+  const matched = allNames.filter(s => byCaller[s] || byCallee[s]);
   const lines = [];
-  for (const msg of messages) {
-    if (msg.role === 'system') continue;
-    lines.push(`### ${msg.role}`);
-    lines.push(msg.content);
-    lines.push('');
+  for (const sym of matched) {
+    const calls = byCaller[sym];
+    const calledBy = byCallee[sym];
+    if (calledBy) {
+      lines.push(`${calledBy.slice(0, 8).join(', ')} → ${sym}`);
+      if (calledBy.length > 8) lines[lines.length - 1] += ` … (+${calledBy.length - 8} more)`;
+    }
+    if (calls) {
+      lines.push(`${sym} → ${calls.slice(0, 8).join(', ')}`);
+      if (calls.length > 8) lines[lines.length - 1] += ` … (+${calls.length - 8} more)`;
+    }
   }
-  if (!lines.length) return '';
-
-  const prompt =
-    'Compress this conversation history into a concise summary. ' +
-    'Keep ALL decisions made, file paths changed, function names, bug descriptions, ' +
-    'and key reasoning. Remove verbose prose, repeated code, and low-value chatter. ' +
-    'Output only the summary.\n\n' +
-    lines.join('\n');
-  return await runGenerate(prompt, model);
+  return lines.join('\n');
 }
 
-function filterHistoryBySymbols(history, symbols) {
-  if (!symbols.length || !history) return history;
-  const sections = history.split(/\n(?=---\n## )/);
-  const pattern = new RegExp(
-    symbols.map(s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|'),
-    'i',
-  );
-  const matching = sections.filter(s => pattern.test(s));
-  return matching.length ? matching.join('') : history;
-}
-
-function buildContextSection(tags, callGraph, query, task, root) {
+function buildContextSection(tags, callGraph, query, root) {
   const symbols = extractSymbols(query);
   const tagNames = [...new Set(tags.map(t => t.name).filter(Boolean))];
   const callChain = formatCallChain(callGraph, symbols, tagNames);
 
   const lines = [`## Context: ${query}`];
-  if (task) lines.push(`**Task**: ${task}`);
   if (callChain) {
     lines.push('**Call chain**:');
     for (const cl of callChain.split('\n')) lines.push(`  ${cl}`);
@@ -229,14 +122,13 @@ function buildContextSection(tags, callGraph, query, task, root) {
   for (const [relFname, fileTags] of Object.entries(byFile)) {
     const hitLines = [...new Set(fileTags.map(t => t.line))].sort((a, b) => a - b);
     const roles = [...new Set(fileTags.map(t => t.kind))].sort();
-    const score = Math.max(...fileTags.map(t => t.score || 0));
     const names = [...new Set(fileTags.map(t => t.name))].sort().join(', ');
 
     const ext = relFname.includes('.') ? relFname.split('.').pop().toLowerCase() : '';
     const lang = EXT_LANG[ext] || '';
 
     lines.push(`### ${relFname}`);
-    lines.push(`> ${roles.join(', ')} | score: ${Math.round(score)} | symbols: ${names}`);
+    lines.push(`> ${roles.join(', ')} | symbols: ${names}`);
 
     const fname = fileTags[0].fname || join(root, relFname);
     let allLines;
@@ -281,13 +173,8 @@ function buildContextSection(tags, callGraph, query, task, root) {
   return lines.join('\n');
 }
 
-export async function runGenx(query, task, root, { compressModel, model, window } = {}) {
-  const historyPath = join(root, '.genx_history.md');
-  const compress_model = compressModel || model || '';
-  const window_tokens = window || 32_000;
-
-  // 1. Run mapx
-  process.stderr.write(`\x1b[90m[genx] running mapx…\x1b[0m\n`);
+export async function runGenx(query, root) {
+  process.stderr.write(`\x1b[90m[genx] mapx…\x1b[0m\n`);
   let data;
   try {
     data = runMapx(root, query, true);
@@ -298,142 +185,21 @@ export async function runGenx(query, task, root, { compressModel, model, window 
   const callGraph = data.callGraph || null;
 
   if (!tags.length) {
-    process.stderr.write(`\x1b[90m[genx] no results from mapx\x1b[0m\n`);
-    return '';
+    process.stderr.write(`\x1b[90m[genx] no results\x1b[0m\n`);
+    return { content: '', hitFiles: [] };
   }
 
-  // 2. Assemble context section
-  const contextSection = buildContextSection(tags, callGraph, query, task || '', root);
+  const contextSection = buildContextSection(tags, callGraph, query, root);
 
-  // 3. Build history entry
-  const timestamp = new Date().toISOString().replace(/\.\d+Z$/, 'Z');
-  const symbols = extractSymbols(query);
-  const symbolStr = symbols.join(', ');
-  const hitFiles = [...new Set(tags.slice(0, 10).map(t => t.rel_fname))].sort().join(', ');
-
-  let historyEntry = `\n---\n## [${timestamp}] ${symbolStr}\n**Task**: ${task || ''}\n**Root**: ${root}\n**Files hit**: ${hitFiles}\n\n${contextSection}\n`;
-
-  // 4. Load history, check token budget
-  let history = await loadHistory(historyPath);
-  const historyTokens = estimateTokens(history);
-
-  if (historyTokens > 0 && compress_model) {
-    const usageRatio = historyTokens / window_tokens;
-    if (usageRatio >= COMPRESS_THRESHOLD) {
-      process.stderr.write(`\x1b[90m[genx] history at ${Math.round(usageRatio * 100)}% of window (${historyTokens.toLocaleString()} tokens) — compressing…\x1b[0m\n`);
-      try {
-        const compressed = await compressHistory(history, compress_model);
-        if (compressed) {
-          history = compressed;
-          await saveHistory(historyPath, history);
-          process.stderr.write(`\x1b[90m[genx] history compressed and rewritten\x1b[0m\n`);
-        }
-      } catch (err) {
-        process.stderr.write(`\x1b[90m[genx] compression failed: ${err.message}\x1b[0m\n`);
-      }
-    }
-  }
-
-  // 5. Dedup tags against history
-  if (history) {
-    const existingKeys = parseHistoryDedupKeys(history);
-    const newTags = tags.filter(t => {
-      const key = `${t.rel_fname}||${t.name}||${t.kind || ''}||${Math.round(t.score || 0)}`;
-      return !existingKeys.has(key);
-    });
-
-    if (newTags.length && newTags.length < tags.length) {
-      const newContext = buildContextSection(newTags, callGraph, query, task || '', root);
-      const newHitFiles = [...new Set(newTags.slice(0, 10).map(t => t.rel_fname))].sort().join(', ');
-      historyEntry = `\n---\n## [${timestamp}] ${symbolStr}\n**Task**: ${task || ''}\n**Root**: ${root}\n**Files hit**: ${newHitFiles}\n\n${newContext}\n`;
-      await appendHistory(historyPath, historyEntry);
-      process.stderr.write(`\x1b[90m[genx] appended ${newTags.length} new tag(s) to ${historyPath} (${tags.length} total)\x1b[0m\n`);
-    } else if (newTags.length) {
-      await appendHistory(historyPath, historyEntry);
-      process.stderr.write(`\x1b[90m[genx] appended to ${historyPath}\x1b[0m\n`);
-    } else {
-      process.stderr.write(`\x1b[90m[genx] all ${tags.length} tags already in history — skipped append\x1b[0m\n`);
-    }
-  } else {
-    await appendHistory(historyPath, historyEntry);
-    process.stderr.write(`\x1b[90m[genx] appended to ${historyPath}\x1b[0m\n`);
-  }
-
-  // 6. Build output for LLM
-  const priorSymbolsFound = history ? filterHistoryBySymbols(history, symbols).trim().length > 0 : false;
-  let body;
-  if (priorSymbolsFound) {
-    const relevantHistory = filterHistoryBySymbols(history, symbols);
-    body = relevantHistory.trim() + '\n\n' + historyEntry.trim();
-  } else {
-    body = (history.trim() + '\n\n' + historyEntry.trim()).trim();
-  }
-
-  const taskLine = task || '(no task specified)';
-  const symbolDisplay = symbols.length ? symbols.join(', ') : query;
-  const preamble = [
-    'You are a senior software engineer. Read the document below carefully before responding.',
-    '',
-    '## How to read this document',
-    '',
-    '**History sections** (entries with ISO timestamps in headings): prior coding sessions on this',
-    'codebase. They show what was explored, what decisions were made, and what files were touched.',
-    'Use them as background — do not treat them as the current task.',
-    '',
-    `**Current context section** (the last entry, timestamp ${timestamp}): fresh code snippets`,
-    `fetched by mapx for the symbol(s): \`${symbolDisplay}\`.`,
-    'Lines marked with `▶` are the exact matched lines. All other lines are surrounding context.',
-    '',
-    '## Your task',
-    '',
-    taskLine,
-    '',
-    '## Rules',
-    '',
-    '- Every claim about code MUST cite the exact file and line number shown in the context.',
-    '- If a file or line is not in the context, say so clearly — do not invent paths or numbers.',
-    '- Prefer minimal, targeted changes. Do not refactor unrelated code.',
-    '- If you produce edits, use SEARCH/REPLACE blocks:',
-    '      path/to/file.ext',
-    '      SEARCH',
-    '      <exact existing lines>',
-    '      REPLACE',
-    '      <new lines>',
-    '- If you need to run a shell command, wrap it in a ```bash fence and it will be executed.',
-    '- If the context is insufficient, output on its own line:',
-    '      REQUERY <symbol_or_symbols>',
-    '  and the pipeline will fetch more context for those symbols.',
-    '',
-    '---',
-    '',
-  ].join('\n');
-
-  // Scan tags in score-order, pick the first 5 unique files (not just top 5 tags)
   const seenFiles = new Set();
   const hitFileList = [];
   for (const tag of tags) {
     if (tag.rel_fname && !seenFiles.has(tag.rel_fname)) {
       seenFiles.add(tag.rel_fname);
       hitFileList.push(tag.rel_fname);
-      if (hitFileList.length >= 5) break;
+      if (hitFileList.length >= MAX_HIT_FILES) break;
     }
   }
 
-  return {
-    content: preamble + body,
-    hitFiles: hitFileList,
-  };
-}
-
-export async function printHistory(historyPath, { symbols } = {}) {
-  let history = await loadHistory(historyPath);
-  if (!history) {
-    console.log(`[genx] no history at ${historyPath}`);
-    return;
-  }
-  if (symbols) {
-    const syms = extractSymbols(symbols);
-    history = filterHistoryBySymbols(history, syms);
-  }
-  console.log(history);
+  return { content: contextSection, hitFiles: hitFileList };
 }

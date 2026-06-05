@@ -1,13 +1,21 @@
-
 import ora from 'ora';
-import { spinners } from './spinners-ora.js';
 
 const OLLAMA_URL = process.env.OLLAMA_HOST || 'http://localhost:11434';
 let _model = process.env.MODEL || 'qwen3-coder';
 
-/** Override the model at runtime (used by CLI --model flag). */
 export function setModel(name) { _model = name; }
 export function getModel()     { return _model; }
+
+export async function checkOllamaHealth() {
+  try {
+    const res = await fetch(`${OLLAMA_URL}/api/tags`, { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    console.log('✅ Ollama server running!');
+  } catch {
+    console.error('❌ Ollama server is not running. Start Ollama with `ollama serve`.');
+    process.exit(1);
+  }
+}
 
 const FALLBACK_CONTEXT_LENGTHS = {
   qwen3: 131072, 'qwen3-coder': 131072,
@@ -182,12 +190,7 @@ export async function runChat(messages) {
  * @returns {Promise<string>}
  */
 async function streamResponse(res, tokenExtractor) {
-  const randomSpinner = spinners[Math.floor(Math.random() * spinners.length)];
-  const spinner = ora({
-    text: 'Generating…',
-    spinner: randomSpinner,
-    color: 'blue',
-  }).start();
+  const spinner = ora({ text: 'Generating…', spinner: 'dots', color: 'blue' }).start();
 
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
