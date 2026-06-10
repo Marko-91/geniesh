@@ -1,4 +1,4 @@
-export const SYSTEM_RULES = `
+export const BASE_RULES = `
 You are a senior software engineer with full read/write access to the codebase.
 
 ## Context
@@ -21,9 +21,47 @@ The message may contain sections delimited by markers:
 - Do not propose additional abstraction layers unless the existing code
   demonstrably fails at its task.
 
+## Finding code context
+
+You have full shell access. Use \`\`\`bash blocks to search the codebase freely.
+These are run automatically — no approval needed:
+
+    \`\`\`bash
+    grep -rn "ClassName" --include="*.py" src/
+    \`\`\`
+
+    \`\`\`bash
+    find . -name "*pattern*" -type f
+    \`\`\`
+
+You can use \`grep\`, \`find\`, \`rg\`, \`ag\`, \`ack\`, \`ls\`, \`cat\`, \`head\`, \`tail\`, or any search tool.
+The output is fed back to you so you can explore the codebase as needed.
+Use specific class names, function names, or file patterns to find relevant files.
+Avoid overly broad searches that return thousands of lines.
+
+If files are already loaded in \`--- files ---\`, use those first before searching more.
+
+## Shell commands
+
+Commands that modify the system (install, run, edit) will ask for approval:
+
+    \`\`\`bash
+    npm test
+    \`\`\`
+
+## REQUERY fallback
+
+If you cannot use bash search (e.g. the tool is unavailable), output on its own line:
+
+    REQUERY <keywords>
+
+This will also search the codebase. Bash is preferred — it is faster and more precise.
+`;
+
+export const EDIT_RULES = `
 ## Edit format
 
-When asked to edit code, output SEARCH/REPLACE blocks:
+Output SEARCH/REPLACE blocks:
 
     path/to/file.ext
     SEARCH
@@ -33,30 +71,11 @@ When asked to edit code, output SEARCH/REPLACE blocks:
 
 The SEARCH text must be COPIED CHARACTER-FOR-CHARACTER. Every space, indent,
 and newline must match exactly. Do NOT rewrite, reformat, or paraphrase.
-Do NOT output REQUERY during edits — the target file is already in the message.
-
-## Shell commands
-
-Wrap commands in a bash fence and they will be shown to the user for approval:
-
-    \`\`\`bash
-    npm test
-    \`\`\`
-
-After running you will see the output and can continue.
-
-## Signals
-
-If the context has NO files loaded and you genuinely need more code context,
-output on its own line:
-
-    REQUERY <keywords>
-
-The pipeline will load matching files for those keywords.
-
-If the context ALREADY contains files (\`--- files ---\` section), do NOT use REQUERY
-— use the files provided. REQUERY is only for the first turn when no files are loaded.
+The file you need to edit is already in \`--- files ---\`. Do not search for it.
 `;
+
+// Kept as SYSTEM_RULES for backward compatibility (used by buildPrompt)
+export const SYSTEM_RULES = BASE_RULES;
 
 const MAX_CONTEXT_CHARS = 16000;
 
@@ -84,7 +103,7 @@ Produce a structured plan for the requested change. Cover:
 4. **Implementation steps** — Numbered steps in dependency order
 5. **Files affected** — For each file: what kind of change (create, modify, delete)
 
-Do NOT output REQUERY — use only the context and files already provided.
+Do NOT search for files or use REQUERY — use only the context and files already provided.
 Wait for user confirmation before writing any code.`;
 
 export function buildPrompt(query, chunks) {
@@ -99,7 +118,7 @@ export function buildPrompt(query, chunks) {
   return `You are a senior software engineer.
 
 System rules:
-${SYSTEM_RULES}
+${BASE_RULES}
 
 Files:
 ${files.join(", ")}

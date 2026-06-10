@@ -4,7 +4,7 @@ import { writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
 import ora from 'ora';
 import { runChat, countTokens, getModelInfo } from './runner.js';
-import { SYSTEM_RULES, ANALYSIS_PROMPT, PLAN_INSTRUCTION } from './prompt.js';
+import { BASE_RULES, EDIT_RULES, ANALYSIS_PROMPT, PLAN_INSTRUCTION } from './prompt.js';
 import { analyzeCode } from './analysis.js';
 import { runGenx } from './genx.js';
 import { parseEdits, applyEdit, formatDiff } from './edit.js';
@@ -16,7 +16,7 @@ import { parseShellCommands, runShellCommand } from './terminal-agent.js';
 const MAX_TURNS = 10;
 
 export async function startChat(modelName, dir, opts) {
-  const messages = [{ role: 'system', content: SYSTEM_RULES }];
+  const messages = [{ role: 'system', content: BASE_RULES }];
 
   const modelInfo = await getModelInfo(modelName);
   const contextLimit = modelInfo.contextLength;
@@ -156,13 +156,7 @@ export async function startChat(modelName, dir, opts) {
 
     const userParts = [question];
     if (refs.length) userParts.push(refs.join('\n\n'));
-    if (hasEditCmd) {
-      userParts.push(
-        'Now produce SEARCH/REPLACE edits for the files above. ' +
-        'Copy SEARCH text character-for-character. ' +
-        'Do NOT output REQUERY.'
-      );
-    }
+    if (hasEditCmd) userParts.push(EDIT_RULES);
     if (hasPlanCmd) userParts.push(PLAN_INSTRUCTION);
     if (hasAnalyseCmd) userParts.push(ANALYSIS_PROMPT);
 
@@ -250,13 +244,22 @@ async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
   let current = reply;
   for (let i = 0; i < 3; i++) {
     if (planMode) break;
+
+    // REQUERY fallback — uses bash grep/find instead of genx
     const rq = current.match(/^REQUERY\s+(.+)$/m);
     if (rq) {
       const symbols = rq[1].trim();
       process.stderr.write(`\x1b[33m↺ REQUERY: ${symbols}\x1b[0m\n`);
       try {
-        const result = await runGenx(symbols, dir);
-        messages.push({ role: 'user', content: `[Context for: ${symbols}]\n\n${result.content}\n\nContinue.` });
+        const grepCmd = `grep -rn "${symbols}" --include="*.php" --include="*.js" --include="*.ts" --include="*.py" --include="*.rs" --include="*.go" --include="*.java" --include="*.rb" "${dir}" | head -40`;
+        const findCmd = `find "${dir}" -name "*${symbols}*" -type f | head -20`;
+        const grepOut = execSync(grepCmd, { encoding: 'utf-8', maxBuffer: 1048576, timeout: 30000 }).toString().slice(0, 8000);
+        const findOut = execSync(findCmd, { encoding: 'utf-8', maxBuffer: 1048576, timeout: 10000 }).toString().slice(0, 2000);
+        let context = '';
+        if (grepOut.trim()) context += `### grep results\n\`\`\`\n${grepOut}\n\`\`\`\n`;
+        if (findOut.trim()) context += `### matching files\n\`\`\`\n${findOut}\n\`\`\`\n`;
+        if (!context.trim()) context = '(no results found)';
+        messages.push({ role: 'user', content: `[Context for: ${symbols}]\n\n${context}\n\nContinue.` });
         process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
         current = await runChat(messages);
         messages.push({ role: 'assistant', content: current });
@@ -264,20 +267,25 @@ async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
       } catch { break; }
     }
 
+    // Shell commands — auto-run context-gathering ones, ask for others
     const cmds = parseShellCommands(current);
+    const CONTEXT_CMDS = new Set(['grep', 'find', 'rg', 'ag', 'ack', 'ls', 'cat', 'head', 'tail', 'wc', 'tree', 'stat']);
     let anyRan = false;
     for (const cmd of cmds) {
+      const firstWord = cmd.split(/\s+/)[0];
+      const isContextCmd = CONTEXT_CMDS.has(firstWord);
       process.stdout.write(`\n\x1b[90m$ ${cmd}\x1b[0m\n`);
-      const ans = await ask('Run? [Y/n] ');
-      if (!ans || ans.toLowerCase().startsWith('y') || ans === '') {
-        const res = runShellCommand(cmd);
-        process.stdout.write(`\x1b[90m${res.output.slice(0, 2000)}\n→ exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
-        messages.push({ role: 'user', content: `$ ${cmd}\n${res.output}\nExit: ${res.exitCode}\nContinue.` });
-        process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
-        current = await runChat(messages);
-        messages.push({ role: 'assistant', content: current });
-        anyRan = true;
+      if (!isContextCmd) {
+        const ans = await ask('Run? [Y/n] ');
+        if (ans && !ans.toLowerCase().startsWith('y') && ans !== '') continue;
       }
+      const res = runShellCommand(cmd);
+      process.stdout.write(`\x1b[90m${res.output.slice(0, 2000)}\n→ exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
+      messages.push({ role: 'user', content: `$ ${cmd}\n${res.output.slice(0, 4000)}\nExit: ${res.exitCode}\nContinue.` });
+      process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
+      current = await runChat(messages);
+      messages.push({ role: 'assistant', content: current });
+      anyRan = true;
     }
     if (anyRan) continue;
     break;
