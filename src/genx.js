@@ -4,7 +4,7 @@ import { join } from 'path';
 
 const MAPX_BIN = process.env.MAPX_BIN || 'mapx';
 const SNIPPET_RADIUS = 20;
-const MAX_HIT_FILES = 5;
+const MAX_HIT_FILES = 15;
 
 const NOISE = new Set([
   'the', 'this', 'that', 'with', 'from', 'into', 'onto', 'over', 'under',

@@ -4,7 +4,8 @@ import { writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
 import ora from 'ora';
 import { runChat, countTokens, getModelInfo } from './runner.js';
-import { SYSTEM_RULES } from './prompt.js';
+import { SYSTEM_RULES, ANALYSIS_PROMPT, PLAN_INSTRUCTION } from './prompt.js';
+import { analyzeCode } from './analysis.js';
 import { runGenx } from './genx.js';
 import { parseEdits, applyEdit, formatDiff } from './edit.js';
 import { webSearch, formatSearchResults } from './web-search.js';
@@ -54,8 +55,10 @@ export async function startChat(modelName, dir, opts) {
 
     const searchMatch  = trimmed.match(/\/search\s+"([^"]+)"/);
     const ctxMatch     = trimmed.match(/\/ctx\s+"([^"]+)"/);
-    const fileMatch    = trimmed.match(/\/file\s+"([^"]+)"/);
+    const fileMatch    = trimmed.match(/\/file\s+"([^"]+)"/) || trimmed.match(/\/file\s+(\S+)/);
     const hasEditCmd   = /(?:^|\s)\/edit\b/.test(trimmed);
+    const hasAnalyseCmd = /(?:^|\s)\/analyse\b/.test(trimmed);
+    const hasPlanCmd    = /(?:^|\s)\/plan\b/.test(trimmed);
 
     if (/^\/budget$/.test(trimmed)) {
       const total = await countTokens(messages.map(m => m.content).join('\n'), modelName);
@@ -75,7 +78,10 @@ export async function startChat(modelName, dir, opts) {
       .replace(/\/search\s+"[^"]+"/g, '')
       .replace(/\/ctx\s+"[^"]+"/g, '')
       .replace(/\/file\s+"[^"]+"/g, '')
+      .replace(/\/file\s+\S+/g, '')
       .replace(/\/edit\b/gi, '')
+      .replace(/\/analyse\b/gi, '')
+      .replace(/\/plan\b/gi, '')
       .replace(/\s+/g, ' ').trim();
     if (!question) question = 'continue';
 
@@ -116,7 +122,8 @@ export async function startChat(modelName, dir, opts) {
 
     let fileContent = '';
     if (fileMatch) {
-      const paths = fileMatch[1].split(',').map(s => s.trim()).filter(Boolean);
+      const rawPath = fileMatch[1] || fileMatch[2];
+      const paths = rawPath.split(',').map(s => s.trim()).filter(Boolean);
       for (const p of paths) {
         const absPath = p.startsWith('/') ? p : join(dir, p);
         const content = await readFile(absPath).catch(() => null);
@@ -125,6 +132,22 @@ export async function startChat(modelName, dir, opts) {
         }
       }
     }
+
+    let analyseContextMd = '';
+    let analyseFileContent = '';
+    if (hasAnalyseCmd && dir) {
+      const as = ora('🔍 Analysing codebase…').start();
+      try {
+        const result = await analyzeCode(question, dir, ragIndex);
+        analyseContextMd = result.genxContent;
+        analyseFileContent = result.fileContent;
+        if (result.hitFiles.length) as.succeed(`found ${result.hitFiles.length} files`);
+        else as.fail('no relevant files found');
+      } catch (err) { as.fail(err.message); }
+    }
+
+    if (analyseContextMd) contextMd += (contextMd ? '\n\n' : '') + analyseContextMd;
+    if (analyseFileContent) fileContent += analyseFileContent;
 
     const refs = [];
     if (contextMd) refs.push(`--- context ---\n${contextMd}\n--- end context ---`);
@@ -135,16 +158,23 @@ export async function startChat(modelName, dir, opts) {
     if (refs.length) userParts.push(refs.join('\n\n'));
     if (hasEditCmd) {
       userParts.push(
-        'Output each edit as:\nFILE_PATH\nSEARCH\n<exact existing code>\nREPLACE\n<new code>\n' +
-        'Do NOT use <<<<<<<, =======, or \`\`\` markers. Copy SEARCH exactly from the files above.'
+        'Now produce SEARCH/REPLACE edits for the files above. ' +
+        'Copy SEARCH text character-for-character. ' +
+        'Do NOT output REQUERY.'
       );
     }
+    if (hasPlanCmd) userParts.push(PLAN_INSTRUCTION);
+    if (hasAnalyseCmd) userParts.push(ANALYSIS_PROMPT);
 
     messages.push({ role: 'user', content: userParts.join('\n\n') });
 
     process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
     try {
       let reply = await runChat(messages);
+
+      // Strip REQUERY lines from response — we feed context directly, LLM shouldn't need to re-query
+      reply = reply.replace(/^REQUERY\s+.*$/gm, '').trim();
+
       messages.push({ role: 'assistant', content: reply });
 
       const total = await countTokens(messages.map(m => m.content).join('\n'), modelName);
@@ -152,7 +182,7 @@ export async function startChat(modelName, dir, opts) {
       const color = pct >= 85 ? '\x1b[31m' : pct >= 60 ? '\x1b[33m' : '\x1b[32m';
       process.stderr.write(`\x1b[90m[tok: ${total.toLocaleString()} / ${contextLimit.toLocaleString()} ${color}${pct}%\x1b[0m\x1b[90m]\x1b[0m\n`);
 
-      reply = await handleSignals(reply, messages, dir, ask, modelName);
+      reply = await handleSignals(reply, messages, dir, ask, modelName, hasPlanCmd);
 
       if (hasEditCmd && reply.trim()) {
         let allFiles = [];
@@ -216,9 +246,10 @@ export async function startChat(modelName, dir, opts) {
   console.log('Bye!');
 }
 
-async function handleSignals(reply, messages, dir, ask, modelName) {
+async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
   let current = reply;
   for (let i = 0; i < 3; i++) {
+    if (planMode) break;
     const rq = current.match(/^REQUERY\s+(.+)$/m);
     if (rq) {
       const symbols = rq[1].trim();

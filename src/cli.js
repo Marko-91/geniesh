@@ -21,7 +21,7 @@ await checkOllamaHealth();
 
 program
   .name('geniesh')
-  .description('AI developer assistant — genx context pipeline + Ollama')
+  .description('AI developer assistant — Ollama + file context')
   .version(version)
   .enablePositionalOptions()
   .option('--model <name>', 'Ollama model', 'qwen3-coder')
@@ -34,7 +34,7 @@ program
 
 program
   .command('chat')
-  .description('Interactive coding chat with genx context pipeline')
+  .description('Interactive coding chat with auto file context')
   .option('--model <name>', 'Ollama model (default: qwen3-coder)')
   .option('--dir <path>', 'Project root (default: cwd)')
   .option('--full-index', 'Pre-build RAG index for vague-query discovery')

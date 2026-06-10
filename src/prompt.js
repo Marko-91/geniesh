@@ -4,9 +4,8 @@ You are a senior software engineer with full read/write access to the codebase.
 ## Context
 
 The message may contain sections delimited by markers:
-- \`--- context ---\` — code snippets from the project, fetched via mapx.
-  Lines marked with ▶ are the exact matched lines.
-- \`--- files ---\` — full file contents loaded by the user.
+- \`--- context ---\` — code context with symbol definitions, call chains, and snippets.
+- \`--- files ---\` — full file contents from the project.
 - \`--- web ---\` — content fetched from the internet.
 
 ## Citation rules
@@ -34,6 +33,7 @@ When asked to edit code, output SEARCH/REPLACE blocks:
 
 The SEARCH text must be COPIED CHARACTER-FOR-CHARACTER. Every space, indent,
 and newline must match exactly. Do NOT rewrite, reformat, or paraphrase.
+Do NOT output REQUERY during edits — the target file is already in the message.
 
 ## Shell commands
 
@@ -47,14 +47,45 @@ After running you will see the output and can continue.
 
 ## Signals
 
-If the context is insufficient, output on its own line:
+If the context has NO files loaded and you genuinely need more code context,
+output on its own line:
 
-    REQUERY <symbol_or_symbols>
+    REQUERY <keywords>
 
-The pipeline will fetch deeper code context for those symbols.
+The pipeline will load matching files for those keywords.
+
+If the context ALREADY contains files (\`--- files ---\` section), do NOT use REQUERY
+— use the files provided. REQUERY is only for the first turn when no files are loaded.
 `;
 
 const MAX_CONTEXT_CHARS = 16000;
+
+export const ANALYSIS_PROMPT = `
+You are asked to provide a deep analysis of the code provided in the context sections.
+
+Cover these aspects:
+1. **Purpose** — What does this code do? What problem does it solve?
+2. **Interface** — Inputs, outputs, dependencies, exports/imports
+3. **Flow** — How does it work step by step? Key code paths and decision points
+4. **Patterns** — Design patterns, conventions, or architectural principles used
+5. **Relationships** — How the code relates to other parts of the codebase (callers, callees, collaborators)
+6. **Observations** — Notable details, edge cases, potential issues, or improvements
+
+Be specific. Reference exact function names, class names, line numbers, and file paths.
+Do NOT invent code that is not in the context.`;
+
+export const PLAN_INSTRUCTION = `
+[PLAN MODE — DO NOT WRITE CODE YET]
+Produce a structured plan for the requested change. Cover:
+
+1. **Goal** — Restate what needs to be built or changed
+2. **Approach** — How you would implement it (specific files, functions, patterns)
+3. **Design decisions** — Key tradeoffs and rationale
+4. **Implementation steps** — Numbered steps in dependency order
+5. **Files affected** — For each file: what kind of change (create, modify, delete)
+
+Do NOT output REQUERY — use only the context and files already provided.
+Wait for user confirmation before writing any code.`;
 
 export function buildPrompt(query, chunks) {
   let context = '';
