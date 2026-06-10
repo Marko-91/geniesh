@@ -4,7 +4,7 @@ import { writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
 import ora from 'ora';
 import { runChat, countTokens, getModelInfo } from './runner.js';
-import { BASE_RULES, EDIT_RULES, ANALYSIS_PROMPT, PLAN_INSTRUCTION } from './prompt.js';
+import { buildSystemPrompt, BASE_RULES, EDIT_RULES, ANALYSIS_PROMPT, PLAN_INSTRUCTION } from './prompt.js';
 import { analyzeCode } from './analysis.js';
 import { runGenx } from './genx.js';
 import { parseEdits, applyEdit, formatDiff } from './edit.js';
@@ -16,7 +16,7 @@ import { parseShellCommands, runShellCommand } from './terminal-agent.js';
 const MAX_TURNS = 10;
 
 export async function startChat(modelName, dir, opts) {
-  const messages = [{ role: 'system', content: BASE_RULES }];
+  const messages = [{ role: 'system', content: buildSystemPrompt(dir) }];
 
   const modelInfo = await getModelInfo(modelName);
   const contextLimit = modelInfo.contextLength;

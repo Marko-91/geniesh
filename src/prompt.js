@@ -1,3 +1,39 @@
+import { readdirSync } from 'fs';
+import { join } from 'path';
+
+const SOURCE_EXTS = new Set([
+  '.js', '.jsx', '.mjs', '.cjs',
+  '.ts', '.tsx',
+  '.py', '.rs', '.go', '.rb', '.java', '.php',
+  '.cs', '.swift', '.kt', '.scala',
+  '.c', '.h', '.cpp', '.hpp',
+  '.lua', '.r', '.m',
+]);
+
+const IGNORE_DIRS = new Set([
+  'node_modules', '.git', '.svn', '.hg',
+  'vendor', 'dist', 'build', '.next', '.nuxt',
+  '__pycache__', '.venv', 'env', '.tox', '.eggs',
+  'target', '.cargo',
+  '.vscode', '.idea',
+  'coverage', '.nyc_output',
+  'bower_components', '.gem',
+]);
+
+const EXT_LANG = {
+  '.js': 'JavaScript', '.jsx': 'JavaScript', '.mjs': 'JavaScript', '.cjs': 'JavaScript',
+  '.ts': 'TypeScript', '.tsx': 'TypeScript',
+  '.py': 'Python',
+  '.rs': 'Rust',
+  '.go': 'Go',
+  '.rb': 'Ruby',
+  '.java': 'Java',
+  '.php': 'PHP',
+  '.cs': 'C#',
+  '.swift': 'Swift',
+  '.kt': 'Kotlin',
+};
+
 export const BASE_RULES = `
 You are a senior software engineer with full read/write access to the codebase.
 
@@ -147,4 +183,163 @@ If there are bugs, list them. If the code is clean, say so.
 List improvements and security issues only if you spot any.
 
 Be concise and practical.`;
+}
+
+export function detectProjectStructure(dir) {
+  const info = { sourceDirs: [], extensions: [], primaryLang: '', fileCount: 0, hasSrc: false, topLevelLayout: '' };
+  try {
+    const entries = readdirSync(dir, { withFileTypes: true });
+    const topLevel = [];
+    const extCount = {};
+
+    for (const entry of entries) {
+      const name = entry.name;
+      if (name.startsWith('.')) continue;
+      topLevel.push(name);
+
+      if (entry.isDirectory() && !IGNORE_DIRS.has(name)) {
+        scanDirForSource(dir, name, info, extCount, 0);
+      } else if (entry.isFile()) {
+        const ext = getExt(name);
+        if (SOURCE_EXTS.has(ext)) {
+          info.fileCount++;
+          extCount[ext] = (extCount[ext] || 0) + 1;
+        }
+      }
+    }
+
+    if (info.fileCount > 0 && !info.sourceDirs.length) info.sourceDirs = ['.'];
+    // If root-level source files exist, ensure '.' is included
+    if (info.fileCount > 0 && !info.sourceDirs.includes('.')) info.sourceDirs.push('.');
+    if (!info.sourceDirs.length) info.sourceDirs = ['.'];
+
+    info.extensions = Object.keys(extCount).sort();
+    info.primaryLang = getPrimaryLang(extCount);
+    info.topLevelLayout = topLevel.join(', ');
+    info.hasSrc = topLevel.includes('src');
+  } catch {
+    info.sourceDirs = ['.'];
+    info.extensions = ['.js', '.ts', '.py'];
+    info.primaryLang = 'JavaScript';
+    info.hasSrc = false;
+    info.topLevelLayout = '.';
+  }
+  return info;
+}
+
+function scanDirForSource(root, sub, info, extCount, depth) {
+  if (depth > 2) return;
+  const dirPath = join(root, sub);
+  try {
+    const entries = readdirSync(dirPath, { withFileTypes: true });
+    let hasSource = false;
+    for (const entry of entries) {
+      if (entry.name.startsWith('.') || IGNORE_DIRS.has(entry.name)) continue;
+      const fullPath = join(dirPath, entry.name);
+      if (entry.isDirectory()) {
+        if (depth < 2) scanDirForSource(root, join(sub, entry.name), info, extCount, depth + 1);
+      } else if (entry.isFile()) {
+        const ext = getExt(entry.name);
+        if (SOURCE_EXTS.has(ext)) {
+          hasSource = true;
+          info.fileCount++;
+          extCount[ext] = (extCount[ext] || 0) + 1;
+        }
+      }
+    }
+    if (hasSource && !info.sourceDirs.includes(sub)) info.sourceDirs.push(sub);
+  } catch {
+    // skip unreadable dirs
+  }
+}
+
+function getExt(name) {
+  const i = name.lastIndexOf('.');
+  if (i === -1) return '';
+  if (name.endsWith('.d.ts')) return '.d.ts';
+  return name.slice(i).toLowerCase();
+}
+
+function getPrimaryLang(extCount) {
+  const PREFERENCE = ['.go', '.rs', '.ts', '.tsx', '.kt', '.swift', '.py', '.rb', '.java', '.php', '.js', '.jsx', '.mjs'];
+  let maxExt = '';
+  let maxCount = 0;
+  for (const [ext, count] of Object.entries(extCount)) {
+    if (count > maxCount || (count === maxCount && PREFERENCE.indexOf(ext) < PREFERENCE.indexOf(maxExt))) {
+      maxCount = count;
+      maxExt = ext;
+    }
+  }
+  return EXT_LANG[maxExt] || 'Unknown';
+}
+
+export function buildSystemPrompt(dir) {
+  const info = detectProjectStructure(dir);
+  const dirs = info.sourceDirs.join(', ');
+  const primaryDir = info.hasSrc ? 'src/' : (info.sourceDirs[0] !== '.' ? info.sourceDirs[0] + '/' : '.');
+  const extFlags = info.extensions.length ? info.extensions.map(e => `--include="*${e}"`).join(' ') : '';
+  const langList = info.primaryLang && info.primaryLang !== 'Unknown' ? `\nPrimary languages: ${info.primaryLang}` : '';
+
+  return [
+    `You are a senior software engineer with full read/write access to the codebase.`,
+    ``,
+    `## Context`,
+    ``,
+    `The message may contain sections delimited by markers:`,
+    `- \`--- context ---\` — code context with symbol definitions, call chains, and snippets.`,
+    `- \`--- files ---\` — full file contents from the project.`,
+    `- \`--- web ---\` — content fetched from the internet.`,
+    ``,
+    `## Citation rules`,
+    ``,
+    `- Every claim about code MUST cite the exact file and line number from the context.`,
+    `- If a file or line is not in the context, say so — do not invent it.`,
+    `- You may use general knowledge for analysis, but prefix it with "In general:" or`,
+    `  "A common pattern is:" so it is clear it is not from the code.`,
+    ``,
+    `## Coding rules`,
+    ``,
+    `- Prefer simple, minimal changes. Do not refactor unrelated code.`,
+    `- Do not propose additional abstraction layers unless the existing code`,
+    `  demonstrably fails at its task.`,
+    ``,
+    `## Finding code context`,
+    ``,
+    `Project layout: ${info.topLevelLayout}${langList}`,
+    `Source directories: ${dirs}`,
+    ``,
+    `You have full shell access. Use \`\`\`bash blocks to search the codebase freely.`,
+    `These are run automatically — no approval needed:`,
+    ``,
+    `    \`\`\`bash`,
+    `    grep -rn "ClassName" ${extFlags} ${primaryDir}`,
+    `    \`\`\``,
+    ``,
+    `    \`\`\`bash`,
+    `    find . -name "*pattern*" -type f`,
+    `    \`\`\``,
+    ``,
+    `You can use \`grep\`, \`find\`, \`rg\`, \`ag\`, \`ack\`, \`ls\`, \`cat\`, \`head\`, \`tail\`, or any search tool.`,
+    `The output is fed back to you so you can explore the codebase as needed.`,
+    `Use specific class names, function names, or file patterns to find relevant files.`,
+    `Avoid overly broad searches that return thousands of lines.`,
+    ``,
+    `If files are already loaded in \`--- files ---\`, use those first before searching more.`,
+    ``,
+    `## Shell commands`,
+    ``,
+    `Commands that modify the system (install, run, edit) will ask for approval:`,
+    ``,
+    `    \`\`\`bash`,
+    `    npm test`,
+    `    \`\`\``,
+    ``,
+    `## REQUERY fallback`,
+    ``,
+    `If you cannot use bash search (e.g. the tool is unavailable), output on its own line:`,
+    ``,
+    `    REQUERY <keywords>`,
+    ``,
+    `This will also search the codebase. Bash is preferred — it is faster and more precise.`,
+  ].join('\n');
 }
