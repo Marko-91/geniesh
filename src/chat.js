@@ -1,6 +1,6 @@
 import { createInterface } from 'readline';
 import { join } from 'path';
-import { writeFile } from 'fs/promises';
+import { writeFile, stat } from 'fs/promises';
 import { execSync } from 'child_process';
 import ora from 'ora';
 import { runChat, countTokens, getModelInfo } from './runner.js';
@@ -240,6 +240,56 @@ export async function startChat(modelName, dir, opts) {
   console.log('Bye!');
 }
 
+const MAX_CONTEXT_FILES = 5;
+
+function extractFilePaths(output, dir) {
+  const paths = new Set();
+  for (const line of output.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    // Match grep/rg -n format: path:line:content
+    const grepMatch = trimmed.match(/^([^:]+?\.\w+):(\d+):/);
+    if (grepMatch) {
+      let p = grepMatch[1];
+      if (p.startsWith('./')) p = p.slice(2);
+      const abs = p.startsWith('/') ? p : join(dir, p);
+      paths.add(abs);
+      continue;
+    }
+    // Match find/ls bare file paths
+    if (!trimmed.startsWith('-') && !trimmed.startsWith('→') && !trimmed.startsWith('.')) {
+      const candidate = trimmed.split(/\s+/)[0];
+      if (candidate && candidate.includes('.')) {
+        let p = candidate;
+        if (p.startsWith('./')) p = p.slice(2);
+        const abs = p.startsWith('/') ? p : join(dir, p);
+        paths.add(abs);
+      }
+    }
+  }
+  return [...paths];
+}
+
+async function loadFilesContent(filePaths, dir) {
+  const lines = ['', '--- files ---'];
+  let loaded = 0;
+  for (const fp of filePaths.slice(0, MAX_CONTEXT_FILES)) {
+    try {
+      const s = await stat(fp);
+      if (s.size > 100000) continue;
+      const content = await readFile(fp);
+      const rel = fp.startsWith(dir) ? fp.slice(dir.length + 1) : fp;
+      lines.push(`\n## File: ${rel}\n\n\`\`\`\n${content}\n\`\`\``);
+      loaded++;
+    } catch {
+      // skip unreadable files
+    }
+  }
+  if (!loaded) return '';
+  lines.push('--- end files ---\n');
+  return lines.join('\n');
+}
+
 async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
   let current = reply;
   for (let i = 0; i < 3; i++) {
@@ -249,7 +299,7 @@ async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
     const rq = current.match(/^REQUERY\s+(.+)$/m);
     if (rq) {
       const symbols = rq[1].trim();
-      process.stderr.write(`\x1b[33m↺ REQUERY: ${symbols}\x1b[0m\n`);
+      process.stderr.write(`\x1b[33m[search] ${symbols}\x1b[0m\n`);
       try {
         const grepCmd = `grep -rn "${symbols}" --include="*.php" --include="*.js" --include="*.ts" --include="*.py" --include="*.rs" --include="*.go" --include="*.java" --include="*.rb" "${dir}" | head -40`;
         const findCmd = `find "${dir}" -name "*${symbols}*" -type f | head -20`;
@@ -258,7 +308,16 @@ async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
         let context = '';
         if (grepOut.trim()) context += `### grep results\n\`\`\`\n${grepOut}\n\`\`\`\n`;
         if (findOut.trim()) context += `### matching files\n\`\`\`\n${findOut}\n\`\`\`\n`;
-        if (!context.trim()) context = '(no results found)';
+        if (context.trim()) {
+          const paths = extractFilePaths(grepOut + '\n' + findOut, dir);
+          const filesContext = await loadFilesContent(paths, dir);
+          if (filesContext) {
+            context += filesContext;
+            process.stderr.write(`\x1b[32m[found ${paths.length} files — loaded ${(filesContext.match(/## File:/g) || []).length} into context]\x1b[0m\n`);
+          }
+        } else {
+          context = '(no results found)';
+        }
         messages.push({ role: 'user', content: `[Context for: ${symbols}]\n\n${context}\n\nContinue.` });
         process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
         current = await runChat(messages);
@@ -269,19 +328,34 @@ async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
 
     // Shell commands — auto-run context-gathering ones, ask for others
     const cmds = parseShellCommands(current);
-    const CONTEXT_CMDS = new Set(['grep', 'find', 'rg', 'ag', 'ack', 'ls', 'cat', 'head', 'tail', 'wc', 'tree', 'stat']);
+    const FILE_CMDS = new Set(['grep', 'find', 'rg', 'ag', 'ack', 'ls', 'cat', 'head', 'tail', 'wc', 'tree', 'stat']);
     let anyRan = false;
     for (const cmd of cmds) {
       const firstWord = cmd.split(/\s+/)[0];
-      const isContextCmd = CONTEXT_CMDS.has(firstWord);
-      process.stdout.write(`\n\x1b[90m$ ${cmd}\x1b[0m\n`);
+      const isContextCmd = FILE_CMDS.has(firstWord);
+      process.stderr.write(`\n\x1b[36m$\x1b[0m \x1b[1m${cmd}\x1b[0m\n`);
       if (!isContextCmd) {
         const ans = await ask('Run? [Y/n] ');
         if (ans && !ans.toLowerCase().startsWith('y') && ans !== '') continue;
       }
       const res = runShellCommand(cmd);
-      process.stdout.write(`\x1b[90m${res.output.slice(0, 2000)}\n→ exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
-      messages.push({ role: 'user', content: `$ ${cmd}\n${res.output.slice(0, 4000)}\nExit: ${res.exitCode}\nContinue.` });
+      const output = res.output.slice(0, 2000);
+      if (output) process.stderr.write(`\x1b[90m${output}\n→ exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
+      else process.stderr.write(`\x1b[90m→ exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
+
+      // Build context from command output + loaded files
+      let context = `$ ${cmd}\n${res.output.slice(0, 4000)}\nExit: ${res.exitCode}`;
+      if (output && isContextCmd) {
+        const paths = extractFilePaths(res.output, dir);
+        if (paths.length) {
+          const filesContext = await loadFilesContent(paths, dir);
+          if (filesContext) {
+            context += filesContext;
+            process.stderr.write(`\x1b[32m[found ${paths.length} files — loaded ${(filesContext.match(/## File:/g) || []).length} into context]\x1b[0m\n`);
+          }
+        }
+      }
+      messages.push({ role: 'user', content: context + '\nContinue.' });
       process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
       current = await runChat(messages);
       messages.push({ role: 'assistant', content: current });
