@@ -17,7 +17,7 @@ export function parseShellCommands(text) {
   return commands;
 }
 
-export function runShellCommand(command) {
+export function runShellCommand(command, cwd) {
   const start = Date.now();
   let stdout = '';
   let stderr = '';
@@ -28,7 +28,7 @@ export function runShellCommand(command) {
       encoding: 'utf-8',
       maxBuffer: 5 * 1024 * 1024,
       windowsHide: true,
-      cwd: process.cwd(),
+      cwd: cwd || process.cwd(),
     });
     stdout = (result || '').trim();
   } catch (err) {

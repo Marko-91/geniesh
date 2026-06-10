@@ -1,6 +1,6 @@
 import { createInterface } from 'readline';
 import { join } from 'path';
-import { writeFile, stat } from 'fs/promises';
+import { writeFile } from 'fs/promises';
 import { execSync } from 'child_process';
 import ora from 'ora';
 import { runChat, countTokens, getModelInfo } from './runner.js';
@@ -166,17 +166,19 @@ export async function startChat(modelName, dir, opts) {
     try {
       let reply = await runChat(messages);
 
-      // Strip REQUERY lines from response — we feed context directly, LLM shouldn't need to re-query
-      reply = reply.replace(/^REQUERY\s+.*$/gm, '').trim();
-
       messages.push({ role: 'assistant', content: reply });
+
+      reply = await handleSignals(reply, messages, dir, ask, modelName, hasPlanCmd);
+
+      // Strip REQUERY lines from displayed response — already handled by handleSignals
+      reply = reply.replace(/^REQUERY\s+.*$/gm, '').trim();
+      // Update stored message content to match displayed (post-hoc)
+      messages[messages.length - 1].content = reply;
 
       const total = await countTokens(messages.map(m => m.content).join('\n'), modelName);
       const pct = Math.round(total / contextLimit * 100);
       const color = pct >= 85 ? '\x1b[31m' : pct >= 60 ? '\x1b[33m' : '\x1b[32m';
       process.stderr.write(`\x1b[90m[tok: ${total.toLocaleString()} / ${contextLimit.toLocaleString()} ${color}${pct}%\x1b[0m\x1b[90m]\x1b[0m\n`);
-
-      reply = await handleSignals(reply, messages, dir, ask, modelName, hasPlanCmd);
 
       if (hasEditCmd && reply.trim()) {
         let allFiles = [];
@@ -247,8 +249,7 @@ function extractFilePaths(output, dir) {
   for (const line of output.split('\n')) {
     const trimmed = line.trim();
     if (!trimmed) continue;
-    // Match grep/rg -n format: path:line:content
-    const grepMatch = trimmed.match(/^([^:]+?\.\w+):(\d+):/);
+    const grepMatch = trimmed.match(/^(.+?\.\w+):(\d+):/);
     if (grepMatch) {
       let p = grepMatch[1];
       if (p.startsWith('./')) p = p.slice(2);
@@ -256,14 +257,13 @@ function extractFilePaths(output, dir) {
       paths.add(abs);
       continue;
     }
-    // Match find/ls bare file paths
-    if (!trimmed.startsWith('-') && !trimmed.startsWith('→') && !trimmed.startsWith('.')) {
+    if (!trimmed.startsWith('-') && !trimmed.startsWith('→') && !trimmed.startsWith('×')) {
       const candidate = trimmed.split(/\s+/)[0];
       if (candidate && candidate.includes('.')) {
         let p = candidate;
         if (p.startsWith('./')) p = p.slice(2);
         const abs = p.startsWith('/') ? p : join(dir, p);
-        paths.add(abs);
+        if (abs !== dir) paths.add(abs);
       }
     }
   }
@@ -271,23 +271,18 @@ function extractFilePaths(output, dir) {
 }
 
 async function loadFilesContent(filePaths, dir) {
-  const lines = ['', '--- files ---'];
-  let loaded = 0;
+  const lines = [];
   for (const fp of filePaths.slice(0, MAX_CONTEXT_FILES)) {
     try {
-      const s = await stat(fp);
-      if (s.size > 100000) continue;
       const content = await readFile(fp);
       const rel = fp.startsWith(dir) ? fp.slice(dir.length + 1) : fp;
-      lines.push(`\n## File: ${rel}\n\n\`\`\`\n${content}\n\`\`\``);
-      loaded++;
+      lines.push(`## File: ${rel}\n\n\`\`\`\n${content}\n\`\`\``);
     } catch {
       // skip unreadable files
     }
   }
-  if (!loaded) return '';
-  lines.push('--- end files ---\n');
-  return lines.join('\n');
+  if (!lines.length) return '';
+  return '\n\n--- files ---\n\n' + lines.join('\n\n') + '\n\n--- end files ---';
 }
 
 async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
@@ -295,28 +290,37 @@ async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
   for (let i = 0; i < 3; i++) {
     if (planMode) break;
 
-    // REQUERY fallback — uses bash grep/find instead of genx
     const rq = current.match(/^REQUERY\s+(.+)$/m);
     if (rq) {
       const symbols = rq[1].trim();
-      process.stderr.write(`\x1b[33m[search] ${symbols}\x1b[0m\n`);
+      process.stderr.write(`\x1b[33m⚡ search: ${symbols}\x1b[0m\n`);
       try {
         const grepCmd = `grep -rn "${symbols}" --include="*.php" --include="*.js" --include="*.ts" --include="*.py" --include="*.rs" --include="*.go" --include="*.java" --include="*.rb" "${dir}" | head -40`;
         const findCmd = `find "${dir}" -name "*${symbols}*" -type f | head -20`;
         const grepOut = execSync(grepCmd, { encoding: 'utf-8', maxBuffer: 1048576, timeout: 30000 }).toString().slice(0, 8000);
         const findOut = execSync(findCmd, { encoding: 'utf-8', maxBuffer: 1048576, timeout: 10000 }).toString().slice(0, 2000);
         let context = '';
-        if (grepOut.trim()) context += `### grep results\n\`\`\`\n${grepOut}\n\`\`\`\n`;
-        if (findOut.trim()) context += `### matching files\n\`\`\`\n${findOut}\n\`\`\`\n`;
+        if (grepOut.trim()) {
+          context += `### grep results\n\`\`\`\n${grepOut}\n\`\`\`\n`;
+          process.stderr.write(`\x1b[2m${grepOut.slice(0, 1000)}\x1b[0m\n`);
+        }
+        if (findOut.trim()) {
+          context += `### matching files\n\`\`\`\n${findOut}\n\`\`\`\n`;
+          process.stderr.write(`\x1b[2m${findOut.slice(0, 500)}\x1b[0m\n`);
+        }
         if (context.trim()) {
           const paths = extractFilePaths(grepOut + '\n' + findOut, dir);
           const filesContext = await loadFilesContent(paths, dir);
           if (filesContext) {
             context += filesContext;
-            process.stderr.write(`\x1b[32m[found ${paths.length} files — loaded ${(filesContext.match(/## File:/g) || []).length} into context]\x1b[0m\n`);
+            const n = (filesContext.match(/## File:/g) || []).length;
+            process.stderr.write(`\x1b[32m✓ ${n} file(s) loaded into context\x1b[0m\n`);
+          } else {
+            process.stderr.write(`\x1b[33m⚠ no files could be loaded\x1b[0m\n`);
           }
         } else {
           context = '(no results found)';
+          process.stderr.write(`\x1b[33m⚠ no results found\x1b[0m\n`);
         }
         messages.push({ role: 'user', content: `[Context for: ${symbols}]\n\n${context}\n\nContinue.` });
         process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
@@ -326,24 +330,29 @@ async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
       } catch { break; }
     }
 
-    // Shell commands — auto-run context-gathering ones, ask for others
     const cmds = parseShellCommands(current);
+    if (cmds.length === 0) break;
+
     const FILE_CMDS = new Set(['grep', 'find', 'rg', 'ag', 'ack', 'ls', 'cat', 'head', 'tail', 'wc', 'tree', 'stat']);
-    let anyRan = false;
+    const batchResults = [];
+
     for (const cmd of cmds) {
       const firstWord = cmd.split(/\s+/)[0];
       const isContextCmd = FILE_CMDS.has(firstWord);
-      process.stderr.write(`\n\x1b[36m$\x1b[0m \x1b[1m${cmd}\x1b[0m\n`);
+      process.stderr.write(`\n\x1b[36m⚡ $\x1b[0m \x1b[97m${cmd}\x1b[0m\n`);
       if (!isContextCmd) {
         const ans = await ask('Run? [Y/n] ');
         if (ans && !ans.toLowerCase().startsWith('y') && ans !== '') continue;
       }
-      const res = runShellCommand(cmd);
+      const res = runShellCommand(cmd, dir);
       const output = res.output.slice(0, 2000);
-      if (output) process.stderr.write(`\x1b[90m${output}\n→ exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
-      else process.stderr.write(`\x1b[90m→ exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
+      if (output) {
+        process.stderr.write(`\x1b[2m${output}\x1b[0m\n`);
+        process.stderr.write(`\x1b[90m⏎ exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
+      } else {
+        process.stderr.write(`\x1b[90m⏎ exit ${res.exitCode} (${res.elapsed})\x1b[0m\n`);
+      }
 
-      // Build context from command output + loaded files
       let context = `$ ${cmd}\n${res.output.slice(0, 4000)}\nExit: ${res.exitCode}`;
       if (output && isContextCmd) {
         const paths = extractFilePaths(res.output, dir);
@@ -351,18 +360,21 @@ async function handleSignals(reply, messages, dir, ask, modelName, planMode) {
           const filesContext = await loadFilesContent(paths, dir);
           if (filesContext) {
             context += filesContext;
-            process.stderr.write(`\x1b[32m[found ${paths.length} files — loaded ${(filesContext.match(/## File:/g) || []).length} into context]\x1b[0m\n`);
+            const n = (filesContext.match(/## File:/g) || []).length;
+            process.stderr.write(`\x1b[32m✓ ${n} file(s) loaded into context\x1b[0m\n`);
           }
+        } else {
+          process.stderr.write(`\x1b[33m⚠ no files matched in output\x1b[0m\n`);
         }
       }
-      messages.push({ role: 'user', content: context + '\nContinue.' });
-      process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
-      current = await runChat(messages);
-      messages.push({ role: 'assistant', content: current });
-      anyRan = true;
+      batchResults.push(context);
     }
-    if (anyRan) continue;
-    break;
+
+    messages.push({ role: 'user', content: batchResults.join('\n\n---\n\n') + '\n\nContinue.' });
+    process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
+    current = await runChat(messages);
+    messages.push({ role: 'assistant', content: current });
+    continue;
   }
   return current;
 }
