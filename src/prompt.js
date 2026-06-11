@@ -34,65 +34,100 @@ const EXT_LANG = {
   '.kt': 'Kotlin',
 };
 
-export const BASE_RULES = `
-You are a senior software engineer with full read/write access to the codebase.
+function buildBaseRules(project) {
+  const lines = [
+    'You are a senior software engineer with full read/write access to the codebase.',
+    '',
+    '## Context',
+    '',
+    'The message may contain sections delimited by markers:',
+    '- `--- context ---` — code context with symbol definitions, call chains, and snippets.',
+    '- `--- files ---` — full file contents from the project.',
+    '- `--- web ---` — content fetched from the internet.',
+    '',
+    '## Citation rules',
+    '',
+    '- Every claim about code MUST cite the exact file and line number from the context.',
+    '- If a file or line is not in the context, say so — do not invent it.',
+    '- You may use general knowledge for analysis, but prefix it with "In general:" or',
+    '  "A common pattern is:" so it is clear it is not from the code.',
+    '',
+    '## Coding rules',
+    '',
+    '- Prefer simple, minimal changes. Do not refactor unrelated code.',
+    '- Do not propose additional abstraction layers unless the existing code',
+    '  demonstrably fails at its task.',
+    '',
+    '## Finding code context',
+  ];
 
-## Context
+  if (project) {
+    const dirs = project.sourceDirs.join(', ');
+    const primaryDir = project.hasSrc ? 'src/' : (project.sourceDirs[0] !== '.' ? project.sourceDirs[0] + '/' : '.');
+    const extFlags = project.extensions.length
+      ? project.extensions.map(e => `--include="*${e}"`).join(' ')
+      : '';
+    const langList = project.primaryLang && project.primaryLang !== 'Unknown'
+      ? `\nPrimary languages: ${project.primaryLang}`
+      : '';
 
-The message may contain sections delimited by markers:
-- \`--- context ---\` — code context with symbol definitions, call chains, and snippets.
-- \`--- files ---\` — full file contents from the project.
-- \`--- web ---\` — content fetched from the internet.
+    lines.push(
+      '',
+      `Project layout: ${project.topLevelLayout}${langList}`,
+      `Source directories: ${dirs}`,
+      '',
+    );
 
-## Citation rules
+    lines.push(
+      'You have full shell access. Use ```bash blocks to search the codebase freely.',
+      'These are run automatically — no approval needed:',
+      '',
+      '    ```bash',
+      `    grep -rn "ClassName" ${extFlags || '--include="*.py"'} ${primaryDir}`,
+      '    ```',
+      '',
+    );
+  } else {
+    lines.push(
+      '',
+      'You have full shell access. Use ```bash blocks to search the codebase freely.',
+      'These are run automatically — no approval needed:',
+      '',
+      '    ```bash',
+      '    grep -rn "ClassName" --include="*.py" src/',
+      '    ```',
+      '',
+    );
+  }
 
-- Every claim about code MUST cite the exact file and line number from the context.
-- If a file or line is not in the context, say so — do not invent it.
-- You may use general knowledge for analysis, but prefix it with "In general:" or
-  "A common pattern is:" so it is clear it is not from the code.
+  lines.push(
+    '    ```bash',
+    '    find . -name "*pattern*" -type f',
+    '    ```',
+    '',
+    'You can use `grep`, `find`, `rg`, `ag`, `ack`, `ls`, `cat`, `head`, `tail`, or any search tool.',
+    'The output is fed back to you so you can explore the codebase as needed.',
+    'Use specific class names, function names, or file patterns to find relevant files.',
+    'Avoid overly broad searches that return thousands of lines.',
+    '',
+    'If files are already loaded in `--- files ---`, use those first before searching more.',
+    '',
+    '## Shell commands',
+    '',
+    'Commands that modify the system (install, run, edit) will ask for approval:',
+    '',
+    '    ```bash',
+    '    npm test',
+    '    ```',
+  );
 
-## Coding rules
+  return lines.join('\n');
+}
 
-- Prefer simple, minimal changes. Do not refactor unrelated code.
-- Do not propose additional abstraction layers unless the existing code
-  demonstrably fails at its task.
+export const BASE_RULES = '\n' + buildBaseRules() + '\n';
 
-## Finding code context
-
-You have full shell access. Use \`\`\`bash blocks to search the codebase freely.
-These are run automatically — no approval needed:
-
-    \`\`\`bash
-    grep -rn "ClassName" --include="*.py" src/
-    \`\`\`
-
-    \`\`\`bash
-    find . -name "*pattern*" -type f
-    \`\`\`
-
-You can use \`grep\`, \`find\`, \`rg\`, \`ag\`, \`ack\`, \`ls\`, \`cat\`, \`head\`, \`tail\`, or any search tool.
-The output is fed back to you so you can explore the codebase as needed.
-Use specific class names, function names, or file patterns to find relevant files.
-Avoid overly broad searches that return thousands of lines.
-
-If files are already loaded in \`--- files ---\`, use those first before searching more.
-
-## Shell commands
-
-Commands that modify the system (install, run, edit) will ask for approval:
-
-    \`\`\`bash
-    npm test
-    \`\`\`
-
-## REQUERY fallback
-
-If you cannot use bash search (e.g. the tool is unavailable), output on its own line:
-
-    REQUERY <keywords>
-
-This will also search the codebase. Bash is preferred — it is faster and more precise.
-`;
+// Kept as SYSTEM_RULES for backward compatibility (used by buildPrompt)
+export const SYSTEM_RULES = BASE_RULES;
 
 export const EDIT_RULES = `
 ## Edit format
@@ -109,9 +144,6 @@ The SEARCH text must be COPIED CHARACTER-FOR-CHARACTER. Every space, indent,
 and newline must match exactly. Do NOT rewrite, reformat, or paraphrase.
 The file you need to edit is already in \`--- files ---\`. Do not search for it.
 `;
-
-// Kept as SYSTEM_RULES for backward compatibility (used by buildPrompt)
-export const SYSTEM_RULES = BASE_RULES;
 
 const MAX_CONTEXT_CHARS = 16000;
 
@@ -275,71 +307,5 @@ function getPrimaryLang(extCount) {
 
 export function buildSystemPrompt(dir) {
   const info = detectProjectStructure(dir);
-  const dirs = info.sourceDirs.join(', ');
-  const primaryDir = info.hasSrc ? 'src/' : (info.sourceDirs[0] !== '.' ? info.sourceDirs[0] + '/' : '.');
-  const extFlags = info.extensions.length ? info.extensions.map(e => `--include="*${e}"`).join(' ') : '';
-  const langList = info.primaryLang && info.primaryLang !== 'Unknown' ? `\nPrimary languages: ${info.primaryLang}` : '';
-
-  return [
-    `You are a senior software engineer with full read/write access to the codebase.`,
-    ``,
-    `## Context`,
-    ``,
-    `The message may contain sections delimited by markers:`,
-    `- \`--- context ---\` — code context with symbol definitions, call chains, and snippets.`,
-    `- \`--- files ---\` — full file contents from the project.`,
-    `- \`--- web ---\` — content fetched from the internet.`,
-    ``,
-    `## Citation rules`,
-    ``,
-    `- Every claim about code MUST cite the exact file and line number from the context.`,
-    `- If a file or line is not in the context, say so — do not invent it.`,
-    `- You may use general knowledge for analysis, but prefix it with "In general:" or`,
-    `  "A common pattern is:" so it is clear it is not from the code.`,
-    ``,
-    `## Coding rules`,
-    ``,
-    `- Prefer simple, minimal changes. Do not refactor unrelated code.`,
-    `- Do not propose additional abstraction layers unless the existing code`,
-    `  demonstrably fails at its task.`,
-    ``,
-    `## Finding code context`,
-    ``,
-    `Project layout: ${info.topLevelLayout}${langList}`,
-    `Source directories: ${dirs}`,
-    ``,
-    `You have full shell access. Use \`\`\`bash blocks to search the codebase freely.`,
-    `These are run automatically — no approval needed:`,
-    ``,
-    `    \`\`\`bash`,
-    `    grep -rn "ClassName" ${extFlags} ${primaryDir}`,
-    `    \`\`\``,
-    ``,
-    `    \`\`\`bash`,
-    `    find . -name "*pattern*" -type f`,
-    `    \`\`\``,
-    ``,
-    `You can use \`grep\`, \`find\`, \`rg\`, \`ag\`, \`ack\`, \`ls\`, \`cat\`, \`head\`, \`tail\`, or any search tool.`,
-    `The output is fed back to you so you can explore the codebase as needed.`,
-    `Use specific class names, function names, or file patterns to find relevant files.`,
-    `Avoid overly broad searches that return thousands of lines.`,
-    ``,
-    `If files are already loaded in \`--- files ---\`, use those first before searching more.`,
-    ``,
-    `## Shell commands`,
-    ``,
-    `Commands that modify the system (install, run, edit) will ask for approval:`,
-    ``,
-    `    \`\`\`bash`,
-    `    npm test`,
-    `    \`\`\``,
-    ``,
-    `## REQUERY fallback`,
-    ``,
-    `If you cannot use bash search (e.g. the tool is unavailable), output on its own line:`,
-    ``,
-    `    REQUERY <keywords>`,
-    ``,
-    `This will also search the codebase. Bash is preferred — it is faster and more precise.`,
-  ].join('\n');
+  return buildBaseRules(info);
 }
