@@ -23,7 +23,7 @@ function trimFences(s) {
 }
 
 function trimTrailing(s) {
-  return s.replace(/\n{2,}\s*(?:```[\w+-]*|REQUERY|CONTEXT|ASSISTANT).*$/s, '').trimEnd();
+  return s.replace(/\n{2,}\s*(?:```[\w+-]*|CONTEXT|ASSISTANT).*$/s, '').trimEnd();
 }
 
 export function parseEdits(text, allFiles) {

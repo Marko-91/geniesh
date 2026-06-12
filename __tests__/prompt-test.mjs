@@ -143,8 +143,8 @@ describe('prompt', () => {
       expect(prompt).toContain('Project layout:');
       expect(prompt).toContain('src');
       expect(prompt).toContain('Source directories:');
-      expect(prompt).toContain('grep -rn "ClassName" --include="*.ts" src/');
-      expect(prompt).not.toContain('--include="*.py"');
+      expect(prompt).toContain('`--- context ---`');
+      expect(prompt).not.toContain('--include=');
     });
 
     it('should generate correct grep example for flat projects', () => {
@@ -153,8 +153,9 @@ describe('prompt', () => {
       writeFileSync(join(tmpDir, 'utils.py'), 'def util():\n    pass\n');
 
       const prompt = buildSystemPrompt(tmpDir);
-      expect(prompt).toContain('grep -rn "ClassName" --include="*.py" .');
+      expect(prompt).toContain('`--- context ---`');
       expect(prompt).toContain('Primary languages: Python');
+      expect(prompt).not.toContain('--include=');
     });
 
     it('should handle directory with no source files', () => {

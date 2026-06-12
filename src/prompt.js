@@ -58,15 +58,11 @@ function buildBaseRules(project) {
     '- Do not propose additional abstraction layers unless the existing code',
     '  demonstrably fails at its task.',
     '',
-    '## Finding code context',
+    '## Code context',
   ];
 
   if (project) {
     const dirs = project.sourceDirs.join(', ');
-    const primaryDir = project.hasSrc ? 'src/' : (project.sourceDirs[0] !== '.' ? project.sourceDirs[0] + '/' : '.');
-    const extFlags = project.extensions.length
-      ? project.extensions.map(e => `--include="*${e}"`).join(' ')
-      : '';
     const langList = project.primaryLang && project.primaryLang !== 'Unknown'
       ? `\nPrimary languages: ${project.primaryLang}`
       : '';
@@ -77,48 +73,11 @@ function buildBaseRules(project) {
       `Source directories: ${dirs}`,
       '',
     );
-
-    lines.push(
-      'You have full shell access. Use ```bash blocks to search the codebase freely.',
-      'These are run automatically — no approval needed:',
-      '',
-      '    ```bash',
-      `    grep -rn "ClassName" ${extFlags || '--include="*.py"'} ${primaryDir}`,
-      '    ```',
-      '',
-    );
-  } else {
-    lines.push(
-      '',
-      'You have full shell access. Use ```bash blocks to search the codebase freely.',
-      'These are run automatically — no approval needed:',
-      '',
-      '    ```bash',
-      '    grep -rn "ClassName" --include="*.py" src/',
-      '    ```',
-      '',
-    );
   }
 
   lines.push(
-    '    ```bash',
-    '    find . -name "*pattern*" -type f',
-    '    ```',
-    '',
-    'You can use `grep`, `find`, `rg`, `ag`, `ack`, `ls`, `cat`, `head`, `tail`, or any search tool.',
-    'The output is fed back to you so you can explore the codebase as needed.',
-    'Use specific class names, function names, or file patterns to find relevant files.',
-    'Avoid overly broad searches that return thousands of lines.',
-    '',
-    'If files are already loaded in `--- files ---`, use those first before searching more.',
-    '',
-    '## Shell commands',
-    '',
-    'Commands that modify the system (install, run, edit) will ask for approval:',
-    '',
-    '    ```bash',
-    '    npm test',
-    '    ```',
+    'Use the `--- context ---`, `--- files ---`, and `--- web ---` sections as your source of truth.',
+    'Do not attempt to search the filesystem — all relevant code is provided in these sections.',
   );
 
   return lines.join('\n');
@@ -171,7 +130,7 @@ Produce a structured plan for the requested change. Cover:
 4. **Implementation steps** — Numbered steps in dependency order
 5. **Files affected** — For each file: what kind of change (create, modify, delete)
 
-Do NOT search for files or use REQUERY — use only the context and files already provided.
+Only use the context and files already provided.
 Wait for user confirmation before writing any code.`;
 
 export function buildPrompt(query, chunks) {
