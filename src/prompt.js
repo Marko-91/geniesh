@@ -49,6 +49,7 @@ function buildBaseRules(project) {
     '',
     '- Every claim about code MUST cite the exact file and line number from the context.',
     '- If a file or line is not in the context, say so — do not invent it.',
+    '- Do NOT ask for more files or context. Work only with what is provided above.',
     '- You may use general knowledge for analysis, but prefix it with "In general:" or',
     '  "A common pattern is:" so it is clear it is not from the code.',
     '',
