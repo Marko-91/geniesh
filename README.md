@@ -9,7 +9,7 @@
 geniesh chat --dir /path/to/project
 
 # One-shot analysis
-geniesh "What does handleSignals do?" --file src/cli.js
+geniesh "explain the main loop" --file src/cli.js
 ```
 
 ## Features
@@ -39,9 +39,9 @@ You: /file "src/cli.js"
   [geniesh] loaded src/cli.js (10,084 tok)
   Assistant: <overview — can be ignored>
 
-You: What does handleSignals() do?
-  Assistant: handleSignals() processes special instructions in the
-  model's reply such as REQUERY or bash commands.
+You: How does the chat loop work?
+  Assistant: The chat loop processes user input, loads file context,
+  calls the LLM, and displays the response.
 ```
 
 The file content persists in the conversation history, so the second turn reads it and answers accurately. This has been verified with qwen3:32b, qwen3-coder, and qwen2.5-coder:14b.
