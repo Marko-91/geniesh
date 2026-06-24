@@ -5,6 +5,9 @@
 ## Quick start
 
 ```bash
+# For a list of commands type
+geniesh
+
 # Start interactive chat in a project directory
 geniesh chat --dir /path/to/project
 
@@ -25,6 +28,12 @@ git diff | geniesh review
 
 # Generate a changelog between tags
 geniesh changelog v1.0.0 v1.1.0
+
+# Manage and review git stashes
+geniesh stash list
+
+# Generate and run shell commands
+geniesh shell "find large files"
 ```
 
 ## Features
@@ -41,6 +50,8 @@ geniesh changelog v1.0.0 v1.1.0
 - **PR descriptions**: `geniesh pr <base> [head]` — generate markdown PR descriptions, optionally create via `--open`
 - **Arbitrary diff review**: `geniesh review` — review code/diff from stdin, `--file`, or `--staged`
 - **Changelogs**: `geniesh changelog <from> [to]` — generate categorized changelogs from git log
+- **Stash management**: `geniesh stash list|show|review` — list, inspect, and review git stashes
+- **Shell commands**: `geniesh shell <query>` — generate and interactively run shell commands
 - **Conversation compaction**: Automatic two-tier compaction when approaching context limit
 
 ## Requirements
@@ -164,10 +175,44 @@ geniesh changelog main my-feature
 
 The LLM categorizes commits into Features, Bug Fixes, Refactors, Deprecations, Documentation, and Other, with a high-level summary at the top.
 
+## Stash management
+
+Manage and review git stashes with LLM-powered summaries.
+
+```bash
+# List all stashes with AI-generated summaries
+geniesh stash list
+
+# Show details for a specific stash (default: 0)
+geniesh stash show 1
+
+# Get a full code review of a stashed change
+geniesh stash review 0
+```
+
+The `list` command shows a table with index, branch, summary, and file count. `show` describes each file changed and why. `review` runs the full review prompt from `geniesh review` on the stashed diff.
+
+## Shell commands
+
+Generate and interactively run shell commands using natural language.
+
+```bash
+# Ask what you want to do
+geniesh shell "find all test files that haven't been run recently"
+geniesh shell "compress all logs older than 7 days"
+geniesh shell "show disk usage by directory"
+```
+
+The command:
+1. Sends your query to the LLM, which returns a shell command
+2. Displays the command with explanation
+3. Prompts `Run this command? [Y/n/s how]` — `Y` to execute, `n` to skip, `s` to show more detail
+4. If the LLM returns a ` ```bash ` block, the first one is used; otherwise the first non-empty line
+
 ## Commands
 
-| Command | Description |
-|---------|-------------|
+| Command / CLI | Description |
+|---------------|-------------|
 | `/file "path1, path2"` | Load full file(s) into context |
 | `/ctx "symbol1, symbol2"` | Pull genx call-graph context for symbols |
 | `/edit` | Enable SEARCH/REPLACE edit mode |
@@ -176,6 +221,10 @@ The LLM categorizes commits into Features, Bug Fixes, Refactors, Deprecations, D
 | `/compact` | Manually trigger conversation compaction |
 | `https://...` | Paste a URL to fetch its content |
 | `exit` | Quit |
+| `geniesh stash list` | List stashes with AI summaries |
+| `geniesh stash show <n>` | Show details for stash N |
+| `geniesh stash review <n>` | Full code review of stash N |
+| `geniesh shell <query>` | Generate and run shell commands |
 
 ## Edit pipeline
 
@@ -201,14 +250,16 @@ Chat loop ──► Ollama API ──► local LLM
     ├── /edit   ──► diff display ──► apply ──► syntax check
     ├── /search ──► DuckDuckGo API ──► fetch pages
     │
-    └── CLI commands
-         ├── geniesh chat      ──► interactive REPL
-         ├── geniesh diff      ──► git merge-base ──► git diff ──► PR review
-         ├── geniesh review    ──► stdin / --file / --staged ──► code review
-         ├── geniesh commit    ──► git diff --cached ──► commit message ──► git commit
-         ├── geniesh pr        ──► git merge-base ──► PR description
-         ├── geniesh changelog ──► git log ──► categorized changelog
-         └── geniesh index     ──► RAG embedding index
+     └── CLI commands
+          ├── geniesh chat      ──► interactive REPL
+          ├── geniesh diff      ──► git merge-base ──► git diff ──► PR review
+          ├── geniesh review    ──► stdin / --file / --staged ──► code review
+          ├── geniesh commit    ──► git diff --cached ──► commit message ──► git commit
+          ├── geniesh pr        ──► git merge-base ──► PR description
+          ├── geniesh changelog ──► git log ──► categorized changelog
+          ├── geniesh stash     ──► git stash list/show -p ──► summaries & review
+          ├── geniesh shell     ──► LLM ──► bash command ──► confirm ──► run
+          └── geniesh index     ──► RAG embedding index
 ```
 
 ## Related

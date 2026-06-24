@@ -166,39 +166,23 @@ ${truncated}
 \`\`\``;
 }
 
-export const COMMIT_PROMPT = `
-Generate a conventional commit message from the staged diff below.
+export function buildCommitPrompt(diff, stat, recentLog) {
+  const MAX = 3000;
+  let truncated = diff.length > MAX
+    ? diff.slice(0, MAX) + '\n… (diff truncated)' : diff;
+  return `Generate a conventional commit message.
 
-Output ONLY the commit message — no commentary, no markdown, no backticks.
-
-Format:
-<type>(<scope>): <subject>
-
-<body>
-
-<footer>
+Changes: ${stat || 'unknown'}
+${truncated ? '\nFirst lines of diff:\n' + truncated : ''}
 
 Rules:
-- Subject: imperative mood, no period, max 72 chars
-- Body: explain what and why (not how), wrap at 72 chars
-- Footer: "BREAKING CHANGE: ..." or "Closes #..." if applicable
-- Types: feat, fix, refactor, test, docs, style, chore, perf, ci, build, revert`;
+- Output ONLY the commit message. No markdown, no backticks, no shell commands, no commentary.
+- Format: <type>(<scope>): <subject> followed by body if needed.
+- Subject: imperative mood, no period, max 72 chars.
+- Types: feat, fix, refactor, test, docs, style, chore, perf, ci, build, revert.
 
-export function buildCommitPrompt(diff, recentLog) {
-  const MAX = 30000;
-  const truncated = diff.length > MAX
-    ? diff.slice(0, MAX) + '\n… (diff truncated)' : diff;
-  return `You are generating a git commit message.
-
-${COMMIT_PROMPT}
-
-## Recent commits (for style reference)
-${recentLog || '(none)'}
-
-## Staged diff
-\`\`\`diff
-${truncated}
-\`\`\``;
+Recent commits for style reference:
+${recentLog || '(none)'}`;
 }
 
 export const PR_PROMPT = `
@@ -297,6 +281,52 @@ ${REVIEW_PROMPT}
 ${header}\`\`\`
 ${truncated}
 \`\`\``;
+}
+
+export const STASH_LIST_PROMPT = `
+Below is a list of stashes. For each stash provide:
+- **Index** — stash number
+- **Branch** — the branch it was created on
+- **Summary** — 1-sentence description of what changed
+- **Files** — key files modified
+
+Format as a markdown table. Be concise.`;
+
+export function buildStashListPrompt(entries) {
+  return `You are describing git stash entries.\n\n${STASH_LIST_PROMPT}\n\n## Stashes\n${entries}`;
+}
+
+export const STASH_SHOW_PROMPT = `
+Explain the changes in this git stash entry below.
+
+Provide:
+1. **Summary** — What does this stash contain? 1–2 sentences.
+2. **Changes** — Key changes grouped by file, with what and why.
+3. **State** — Is this complete work-in-progress or a finished feature?`;
+
+export function buildStashShowPrompt(diff) {
+  const MAX = 30000;
+  const truncated = diff.length > MAX ? diff.slice(0, MAX) + '\n… (truncated)' : diff;
+  return `You are explaining a git stash.\n\n${STASH_SHOW_PROMPT}\n\n## Stash diff\n\`\`\`diff\n${truncated}\n\`\`\``;
+}
+
+export const SHELL_PROMPT = `
+Generate a single shell command for the task below.
+
+Output in a code block:
+\`\`\`bash
+<command>
+\`\`\`
+
+Then provide a brief explanation (max 2 sentences). If the command is destructive
+(rm, dd, >, format, etc.) flag it with ⚠️ in the explanation.
+
+Rules:
+- One command only. Chain with && if needed. Prefer portable POSIX.
+- If the task is ambiguous, make a reasonable assumption and note it.`;
+
+export function buildShellPrompt(query) {
+  return `You are a shell command expert.\n\n${SHELL_PROMPT}\n\nTask: ${query}`;
 }
 
 export function buildPrompt(query, chunks) {

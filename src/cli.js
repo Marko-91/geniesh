@@ -10,14 +10,15 @@ const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
 
 import { startChat } from './chat.js';
-import { setModel, checkOllamaHealth, runQuery, runGenerate } from './runner.js';
+import { setModel, checkOllamaHealth, runQuery, runGenerate, runChat } from './runner.js';
 import { setEmbedder } from './embedder.js';
 import { buildIndex, buildIndexFromFileList, loadIndex, indexExists } from './indexer.js';
 import { search } from './search.js';
-import { buildPrompt, buildDirectPrompt, buildDiffReviewPrompt, buildCommitPrompt, buildPrPrompt, buildChangelogPrompt, buildReviewPrompt } from './prompt.js';
+import { buildPrompt, buildDirectPrompt, buildDiffReviewPrompt, buildCommitPrompt, buildPrPrompt, buildChangelogPrompt, buildReviewPrompt, buildStashListPrompt, buildStashShowPrompt, buildShellPrompt } from './prompt.js';
 import { readFile } from './fs-utils.js';
 import { extractFunction } from './extractor.js';
 import { getBranchDiff, getStagedDiff, getRecentCommits } from './git-utils.js';
+import { parseShellCommands, runShellCommand } from './terminal-agent.js';
 
 function ask(query) {
   const rl = createInterface({ input: process.stdin, output: process.stdout });
@@ -102,11 +103,15 @@ program
       }
 
       const recentLog = getRecentCommits(5);
-      const prompt = buildCommitPrompt(diff, recentLog);
+      const prompt = buildCommitPrompt(diff, stat, recentLog);
       const reply = await runGenerate(prompt, model);
       if (!reply.trim()) { console.error('Model returned empty message.'); process.exit(1); }
 
-      const lines = reply.trim().split('\n');
+      let cleaned = reply.trim();
+      if (cleaned.startsWith('```')) {
+        cleaned = cleaned.replace(/^```[\w]*\n?/, '').replace(/\n?```$/, '').trim();
+      }
+      const lines = cleaned.split('\n');
       const subject = lines[0].trim();
       const body = lines.slice(1).map(l => l.trimRight()).join('\n').trim();
 
@@ -278,6 +283,146 @@ program
     }
   });
 
+const stash = program.command('stash').description('Manage and review git stashes');
+
+stash.command('list')
+  .description('Describe all stashes')
+  .option('--model <name>')
+  .action(async (opts) => {
+    try {
+      const model = opts.model || program.opts().model || 'qwen3-coder';
+      setModel(model);
+      const list = execSync('git stash list', { encoding: 'utf-8' }).trim();
+      if (!list) { console.log('No stashes found.'); return; }
+      const entries = list.split('\n').map(line => {
+        const idx = line.match(/stash@\{(\d+)\}/);
+        const rest = line.replace(/stash@\{\d+\}:\s*/, '');
+        return { index: idx ? idx[1] : '?', line: rest, raw: line };
+      });
+      for (const e of entries) {
+        try {
+          const stat = execSync(`git stash show stash@{${e.index}} --stat`, { encoding: 'utf-8' }).trim();
+          e.stat = stat;
+        } catch { e.stat = ''; }
+      }
+      const table = entries.map(e =>
+        `| stash@{${e.index}} | ${e.line.replace(/\|/g, '\\|')} |\n` +
+        (e.stat ? `  _Files:_ ${e.stat.split('\n').pop().trim() || e.stat.split('\n')[0]}` : '')
+      ).join('\n');
+      const prompt = buildStashListPrompt(table);
+      console.log(`\n\x1b[36m📋 Stashes\x1b[0m  \x1b[90m(${entries.length} found)\x1b[0m\n`);
+      await runQuery(prompt);
+    } catch (err) {
+      if (err.message?.includes('fatal:')) { console.error(`Git error: ${err.message.split('\n')[0]}`); }
+      else { console.error(`\nError: ${err.message}`); }
+      process.exit(1);
+    }
+  });
+
+stash.command('show')
+  .description('Explain changes in a stash')
+  .argument('[index]', 'Stash index (default: 0)')
+  .option('--model <name>')
+  .action(async (index, opts) => {
+    try {
+      const model = opts.model || program.opts().model || 'qwen3-coder';
+      setModel(model);
+      const n = index || '0';
+      const diff = execSync(`git stash show -p stash@{${n}}`, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }).trim();
+      if (!diff) { console.log('Stash is empty.'); return; }
+      const prompt = buildStashShowPrompt(diff);
+      console.log(`\n\x1b[36m📋 Stash@{${n}}\x1b[0m\n`);
+      await runQuery(prompt);
+    } catch (err) {
+      if (err.message?.includes('fatal:')) { console.error(`Git error: ${err.message.split('\n')[0]}`); }
+      else { console.error(`\nError: ${err.message}`); }
+      process.exit(1);
+    }
+  });
+
+stash.command('review')
+  .description('Review a stash for issues')
+  .argument('[index]', 'Stash index (default: 0)')
+  .option('--model <name>')
+  .action(async (index, opts) => {
+    try {
+      const model = opts.model || program.opts().model || 'qwen3-coder';
+      setModel(model);
+      const n = index || '0';
+      const diff = execSync(`git stash show -p stash@{${n}}`, { encoding: 'utf-8', maxBuffer: 50 * 1024 * 1024 }).trim();
+      if (!diff) { console.log('Stash is empty.'); return; }
+      const prompt = buildReviewPrompt(diff, `stash@{${n}}`);
+      console.log(`\n\x1b[36m📋 Review stash@{${n}}\x1b[0m\n`);
+      await runQuery(prompt);
+    } catch (err) {
+      if (err.message?.includes('fatal:')) { console.error(`Git error: ${err.message.split('\n')[0]}`); }
+      else { console.error(`\nError: ${err.message}`); }
+      process.exit(1);
+    }
+  });
+
+program
+  .command('shell')
+  .description('Generate and optionally run shell commands')
+  .argument('<query>', 'What to do in natural language')
+  .option('--run', 'Execute without confirmation')
+  .option('--model <name>')
+  .option('--dir <path>', 'Working directory')
+  .action(async (query, opts) => {
+    try {
+      const model = opts.model || program.opts().model || 'qwen3-coder';
+      setModel(model);
+      const prompt = buildShellPrompt(query);
+      const reply = await runGenerate(prompt, model);
+      if (!reply.trim()) { console.error('Model returned empty response.'); process.exit(1); }
+
+      const cmds = parseShellCommands(reply);
+      let cmd = cmds[0];
+      if (!cmd) {
+        const lines = reply.trim().split('\n').filter(l => l.trim() && !l.trim().startsWith('```') && !l.startsWith('#') && !l.startsWith('//') && !l.startsWith('*') && !l.startsWith('-') && !l.startsWith('>'));
+        cmd = lines[0]?.trim();
+      }
+      if (!cmd) { console.error('Could not parse a command from the response.'); process.exit(1); }
+
+      const explanation = reply.replace(/```[\s\S]*?```/g, '').trim();
+
+      console.log(`\n\x1b[36m┌─ Shell ──────────────────────────────────\x1b[0m`);
+      console.log(`\x1b[36m│\x1b[0m $ ${cmd}`);
+      console.log(`\x1b[36m└────────────────────────────────────────────\x1b[0m\n`);
+      if (explanation) console.log(`${explanation}\n`);
+
+      if (opts.run) {
+        const result = runShellCommand(cmd, opts.dir);
+        console.log(result.output || '(no output)');
+        if (result.exitCode !== 0) console.log(`\x1b[31m→ exit ${result.exitCode} (${result.elapsed})\x1b[0m`);
+        else console.log(`\x1b[32m→ ok (${result.elapsed})\x1b[0m`);
+      } else {
+        const ans = await ask('Run this command? [Y/n/s how] ');
+        if (!ans || ans.toLowerCase() === 'y' || ans === '') {
+          const result = runShellCommand(cmd, opts.dir);
+          console.log(result.output || '(no output)');
+          if (result.exitCode !== 0) console.log(`\x1b[31m→ exit ${result.exitCode} (${result.elapsed})\x1b[0m`);
+          else console.log(`\x1b[32m→ ok (${result.elapsed})\x1b[0m`);
+        } else if (ans.toLowerCase() === 's') {
+          const result = runShellCommand(cmd + ' 2>&1 | head -50', opts.dir);
+          if (result.output) console.log(result.output);
+          else console.log('(no output)');
+          const ans2 = await ask('Run it? [Y/n] ');
+          if (!ans2 || ans2.toLowerCase() === 'y' || ans2 === '') {
+            const result2 = runShellCommand(cmd, opts.dir);
+            console.log(result2.output || '(no output)');
+            if (result2.exitCode !== 0) console.log(`\x1b[31m→ exit ${result2.exitCode} (${result2.elapsed})\x1b[0m`);
+            else console.log(`\x1b[32m→ ok (${result2.elapsed})\x1b[0m`);
+          }
+        }
+      }
+    } catch (err) {
+      if (err.message?.includes('fatal:')) { console.error(`Git error: ${err.message.split('\n')[0]}`); }
+      else { console.error(`\nError: ${err.message}`); }
+      process.exit(1);
+    }
+  });
+
 program
   .argument('[query]', 'What to ask about your code')
   .option('--file <path>', 'Analyze a specific file')
@@ -291,9 +436,11 @@ program
       console.log('  \x1b[90m  chat\x1b[0m               Interactive coding session');
       console.log('  \x1b[90m  diff <base> [head]\x1b[0m  PR-style code review between branches');
       console.log('  \x1b[90m  review\x1b[0m             Review code/diff from stdin, --file, or --staged');
+      console.log('  \x1b[90m  stash list|show|review\x1b[0m  Manage and review git stashes');
       console.log('  \x1b[90m  commit\x1b[0m             Generate commit message from staged changes');
       console.log('  \x1b[90m  pr <base> [head]\x1b[0m    Generate PR description');
       console.log('  \x1b[90m  changelog <from> [to]\x1b[0m  Generate changelog from git log');
+      console.log('  \x1b[90m  shell <query>\x1b[0m       Generate and run shell commands');
       console.log('  \x1b[90m  index\x1b[0m              Build RAG index for a directory');
       console.log('  \x1b[90m  "query" --file\x1b[0m      One-shot analysis of a file\n');
       console.log('  \x1b[1mIn-chat commands\x1b[0m \x1b[90m(/file, /ctx, /edit, /search, /analyse, /plan, /budget, /compact)\x1b[0m');
