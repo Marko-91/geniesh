@@ -19,6 +19,12 @@ git add -A && geniesh commit
 
 # Generate a PR description between branches
 geniesh pr main my-feature
+
+# Review any diff via stdin
+git diff | geniesh review
+
+# Generate a changelog between tags
+geniesh changelog v1.0.0 v1.1.0
 ```
 
 ## Features
@@ -33,6 +39,8 @@ geniesh pr main my-feature
 - **PR diff review**: `geniesh diff <base> [head]` — PR-style review of changes between branches with gap analysis
 - **Commit messages**: `geniesh commit` — generate conventional commit messages from staged changes
 - **PR descriptions**: `geniesh pr <base> [head]` — generate markdown PR descriptions, optionally create via `--open`
+- **Arbitrary diff review**: `geniesh review` — review code/diff from stdin, `--file`, or `--staged`
+- **Changelogs**: `geniesh changelog <from> [to]` — generate categorized changelogs from git log
 - **Conversation compaction**: Automatic two-tier compaction when approaching context limit
 
 ## Requirements
@@ -118,6 +126,44 @@ The command:
 2. LLM generates a markdown PR description with title, summary, changes, testing notes, and checklist
 3. With `--open`: creates the PR via `gh pr create`
 
+## Diff review (stdin)
+
+Review any code or diff without needing a branch comparison.
+
+```bash
+# Pipe a diff from anywhere
+git diff | geniesh review
+git diff --cached | geniesh review
+
+# Review a patch file
+geniesh review --file changes.patch
+
+# Review staged changes
+geniesh review --staged
+
+# Label the review for context
+git diff | geniesh review --label "WIP: refactor auth"
+```
+
+The command reads from stdin (if piped), `--file`, or `--staged` and passes the content to the LLM for summary, observations, and suggestions.
+
+## Changelog
+
+Generate a categorized changelog from git log between two refs.
+
+```bash
+# Between two tags
+geniesh changelog v1.0.0 v1.1.0
+
+# From a tag to current HEAD (omit end ref)
+geniesh changelog v1.0.0
+
+# Between branches
+geniesh changelog main my-feature
+```
+
+The LLM categorizes commits into Features, Bug Fixes, Refactors, Deprecations, Documentation, and Other, with a high-level summary at the top.
+
 ## Commands
 
 | Command | Description |
@@ -158,8 +204,10 @@ Chat loop ──► Ollama API ──► local LLM
     └── CLI commands
          ├── geniesh chat      ──► interactive REPL
          ├── geniesh diff      ──► git merge-base ──► git diff ──► PR review
+         ├── geniesh review    ──► stdin / --file / --staged ──► code review
          ├── geniesh commit    ──► git diff --cached ──► commit message ──► git commit
          ├── geniesh pr        ──► git merge-base ──► PR description
+         ├── geniesh changelog ──► git log ──► categorized changelog
          └── geniesh index     ──► RAG embedding index
 ```
 

@@ -245,6 +245,60 @@ ${truncated}
 \`\`\``;
 }
 
+export const CHANGELOG_PROMPT = `
+Generate a changelog in markdown from the commits below.
+
+Categorize changes under these headings:
+- **Features** — new capabilities
+- **Bug Fixes** — bug resolutions
+- **Refactors** — code structure changes
+- **Deprecations** — deprecated features
+- **Documentation** — docs changes
+- **Other** — misc changes
+
+Start with a high-level summary paragraph of what changed.
+Then list changes grouped by category using bullet points.
+Reference commit hashes (short form) in parentheses after each entry.`;
+
+export function buildChangelogPrompt(log, messages) {
+  const MAX = 30000;
+  const truncated = messages.length > MAX
+    ? messages.slice(0, MAX) + '\n… (truncated)' : messages;
+  return `You are generating a changelog for a release.
+
+${CHANGELOG_PROMPT}
+
+## Commits
+${log || '(no commits)'}
+
+## Commit details
+${truncated || '(none)'}`;
+}
+
+export const REVIEW_PROMPT = `
+Review the code or diff below. Provide:
+
+1. **Summary** — What does this code do? 1–2 sentences.
+2. **Observations** — Code quality, potential bugs, missed edge cases, security concerns.
+3. **Suggestions** — Concrete, actionable improvements (with code examples where helpful).
+
+Cite specific line numbers. Be concise but thorough.`;
+
+export function buildReviewPrompt(content, label = '') {
+  const MAX = 50000;
+  const truncated = content.length > MAX
+    ? content.slice(0, MAX) + '\n… (content truncated)' : content;
+  const header = label ? `## ${label}\n\n` : '';
+  return `You are a senior engineer doing a code review.
+
+${REVIEW_PROMPT}
+
+## Content to review
+${header}\`\`\`
+${truncated}
+\`\`\``;
+}
+
 export function buildPrompt(query, chunks) {
   let context = '';
   for (const c of chunks) {

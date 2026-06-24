@@ -14,7 +14,7 @@ import { setModel, checkOllamaHealth, runQuery, runGenerate } from './runner.js'
 import { setEmbedder } from './embedder.js';
 import { buildIndex, buildIndexFromFileList, loadIndex, indexExists } from './indexer.js';
 import { search } from './search.js';
-import { buildPrompt, buildDirectPrompt, buildDiffReviewPrompt, buildCommitPrompt, buildPrPrompt } from './prompt.js';
+import { buildPrompt, buildDirectPrompt, buildDiffReviewPrompt, buildCommitPrompt, buildPrPrompt, buildChangelogPrompt, buildReviewPrompt } from './prompt.js';
 import { readFile } from './fs-utils.js';
 import { extractFunction } from './extractor.js';
 import { getBranchDiff, getStagedDiff, getRecentCommits } from './git-utils.js';
@@ -205,6 +205,80 @@ program
   });
 
 program
+  .command('changelog')
+  .description('Generate a changelog from git log between refs')
+  .argument('<from>', 'Starting ref (tag, commit, branch)')
+  .argument('[to]', 'Ending ref (default: HEAD)')
+  .option('--model <name>', 'Ollama model')
+  .action(async (from, to, opts) => {
+    try {
+      const model = opts.model || program.opts().model || 'qwen3-coder';
+      setModel(model);
+      if (!to) to = execSync('git rev-parse HEAD', { encoding: 'utf-8' }).trim();
+      const log = execSync(`git log --oneline "${from}..${to}"`, { encoding: 'utf-8', maxBuffer: 5 * 1024 * 1024 });
+      const messages = execSync(`git log "${from}..${to}" --format="%h %s%n%b---"`, { encoding: 'utf-8', maxBuffer: 5 * 1024 * 1024 });
+      if (!log.trim()) { console.log('No commits found in that range.'); return; }
+      const prompt = buildChangelogPrompt(log, messages);
+      console.log(`\n\x1b[36m📋 Changelog\x1b[0m  \x1b[90m${from}..${to}\x1b[0m\n`);
+      await runQuery(prompt);
+    } catch (err) {
+      if (err.message?.includes('fatal:')) { console.error(`Git error: ${err.message.split('\n')[0]}`); }
+      else { console.error(`\nError: ${err.message}`); }
+      process.exit(1);
+    }
+  });
+
+async function readStdin() {
+  if (process.stdin.isTTY) return null;
+  const chunks = [];
+  for await (const chunk of process.stdin) chunks.push(chunk);
+  return Buffer.concat(chunks).toString('utf-8');
+}
+
+program
+  .command('review')
+  .description('Review code or diff from stdin / file / staged')
+  .option('--file <path>', 'Read content from a file')
+  .option('--staged', 'Review staged changes (git diff --cached)')
+  .option('--label <text>', 'Label for the review')
+  .option('--model <name>', 'Ollama model')
+  .action(async (opts) => {
+    try {
+      const model = opts.model || program.opts().model || 'qwen3-coder';
+      setModel(model);
+
+      let content = '';
+      if (opts.file) {
+        const { readFile } = await import('./fs-utils.js');
+        content = await readFile(opts.file);
+      } else if (opts.staged) {
+        const r = getStagedDiff();
+        content = r.diff;
+        if (!content.trim()) { console.error('No staged changes.'); process.exit(1); }
+      } else {
+        content = await readStdin();
+      }
+
+      if (!content.trim()) {
+        console.error('Nothing to review. Pipe input, use --file, or --staged.');
+        console.error('  git diff | geniesh review');
+        console.error('  geniesh review --staged');
+        console.error('  geniesh review --file patch.diff');
+        process.exit(1);
+      }
+
+      const prompt = buildReviewPrompt(content, opts.label || '');
+      if (opts.label) console.log(`\n\x1b[36m📋 Review: ${opts.label}\x1b[0m\n`);
+      else console.log(`\n\x1b[36m📋 Review\x1b[0m\n`);
+      await runQuery(prompt);
+    } catch (err) {
+      if (err.message?.includes('ENOENT')) { console.error(`File not found: ${opts.file}`); }
+      else { console.error(`\nError: ${err.message}`); }
+      process.exit(1);
+    }
+  });
+
+program
   .argument('[query]', 'What to ask about your code')
   .option('--file <path>', 'Analyze a specific file')
   .option('--fn <name>', 'Extract a function (requires --file)')
@@ -216,8 +290,10 @@ program
       console.log('  \x1b[1mCLI commands:\x1b[0m');
       console.log('  \x1b[90m  chat\x1b[0m               Interactive coding session');
       console.log('  \x1b[90m  diff <base> [head]\x1b[0m  PR-style code review between branches');
+      console.log('  \x1b[90m  review\x1b[0m             Review code/diff from stdin, --file, or --staged');
       console.log('  \x1b[90m  commit\x1b[0m             Generate commit message from staged changes');
       console.log('  \x1b[90m  pr <base> [head]\x1b[0m    Generate PR description');
+      console.log('  \x1b[90m  changelog <from> [to]\x1b[0m  Generate changelog from git log');
       console.log('  \x1b[90m  index\x1b[0m              Build RAG index for a directory');
       console.log('  \x1b[90m  "query" --file\x1b[0m      One-shot analysis of a file\n');
       console.log('  \x1b[1mIn-chat commands\x1b[0m \x1b[90m(/file, /ctx, /edit, /search, /analyse, /plan, /budget, /compact)\x1b[0m');
