@@ -34,6 +34,12 @@ geniesh stash list
 
 # Generate and run shell commands
 geniesh shell "find large files"
+
+# Generate documentation from code
+geniesh docs --file src/search.js
+
+# Explain code with git blame history
+geniesh blame src/cli.js --lines 50-80
 ```
 
 ## Features
@@ -52,6 +58,8 @@ geniesh shell "find large files"
 - **Changelogs**: `geniesh changelog <from> [to]` — generate categorized changelogs from git log
 - **Stash management**: `geniesh stash list|show|review` — list, inspect, and review git stashes
 - **Shell commands**: `geniesh shell <query>` — generate and interactively run shell commands
+- **Code documentation**: `geniesh docs` — generate markdown docs from `--file`, `--staged`, or stdin
+- **Git blame analysis**: `geniesh blame <file>` — explain code with git blame annotations
 - **Conversation compaction**: Automatic two-tier compaction when approaching context limit
 
 ## Requirements
@@ -209,6 +217,50 @@ The command:
 3. Prompts `Run this command? [Y/n/s how]` — `Y` to execute, `n` to skip, `s` to show more detail
 4. If the LLM returns a ` ```bash ` block, the first one is used; otherwise the first non-empty line
 
+## Code documentation
+
+Generate markdown documentation from source code.
+
+```bash
+# Document a file
+geniesh docs --file src/search.js
+
+# Document staged changes
+geniesh docs --staged
+
+# Pipe code from anywhere
+cat src/search.js | geniesh docs
+
+# Label the output
+geniesh docs --file src/search.js --label "Search module"
+```
+
+The command:
+1. Reads source code via `--file`, `--staged`, or stdin (same 3-way input as `review`)
+2. LLM generates markdown covering: high-level summary, per-function docs (purpose, parameters, return value, edge cases), and usage examples
+3. Streams to stdout
+
+## Git blame analysis
+
+Explain code through `git blame` history with LLM-powered annotations.
+
+```bash
+# Analyze entire file
+geniesh blame src/cli.js
+
+# Specific line range
+geniesh blame src/prompt.js --lines 40-70
+
+# Recent changes only
+geniesh blame src/search.js --since "2 weeks ago"
+```
+
+The command:
+1. Runs `git blame --date=short` on the file
+2. Groups consecutive lines by commit
+3. LLM explains each group: what changed, why (based on code + commit context), and any patterns or concerns
+4. Streams the analysis to stdout
+
 ## Commands
 
 | Command / CLI | Description |
@@ -225,6 +277,8 @@ The command:
 | `geniesh stash show <n>` | Show details for stash N |
 | `geniesh stash review <n>` | Full code review of stash N |
 | `geniesh shell <query>` | Generate and run shell commands |
+| `geniesh docs --file <path>` | Generate documentation from code |
+| `geniesh blame <file>` | Explain code with git blame history |
 
 ## Edit pipeline
 
@@ -258,8 +312,10 @@ Chat loop ──► Ollama API ──► local LLM
           ├── geniesh pr        ──► git merge-base ──► PR description
           ├── geniesh changelog ──► git log ──► categorized changelog
           ├── geniesh stash     ──► git stash list/show -p ──► summaries & review
-          ├── geniesh shell     ──► LLM ──► bash command ──► confirm ──► run
-          └── geniesh index     ──► RAG embedding index
+           ├── geniesh shell     ──► LLM ──► bash command ──► confirm ──► run
+           ├── geniesh docs      ──► --file / --staged / stdin ──► markdown docs
+           ├── geniesh blame     ──► git blame ──► group by commit ──► LLM explanation
+           └── geniesh index     ──► RAG embedding index
 ```
 
 ## Related

@@ -14,10 +14,10 @@ import { setModel, checkOllamaHealth, runQuery, runGenerate, runChat } from './r
 import { setEmbedder } from './embedder.js';
 import { buildIndex, buildIndexFromFileList, loadIndex, indexExists } from './indexer.js';
 import { search } from './search.js';
-import { buildPrompt, buildDirectPrompt, buildDiffReviewPrompt, buildCommitPrompt, buildPrPrompt, buildChangelogPrompt, buildReviewPrompt, buildStashListPrompt, buildStashShowPrompt, buildShellPrompt } from './prompt.js';
+import { buildPrompt, buildDirectPrompt, buildDiffReviewPrompt, buildCommitPrompt, buildPrPrompt, buildChangelogPrompt, buildReviewPrompt, buildStashListPrompt, buildStashShowPrompt, buildShellPrompt, buildDocsPrompt, buildBlamePrompt } from './prompt.js';
 import { readFile } from './fs-utils.js';
 import { extractFunction } from './extractor.js';
-import { getBranchDiff, getStagedDiff, getRecentCommits } from './git-utils.js';
+import { getBranchDiff, getStagedDiff, getRecentCommits, getBlame, getCommitMessage } from './git-utils.js';
 import { parseShellCommands, runShellCommand } from './terminal-agent.js';
 
 function ask(query) {
@@ -283,6 +283,64 @@ program
     }
   });
 
+program
+  .command('docs')
+  .description('Generate documentation from code')
+  .option('--file <path>', 'Generate docs for a file')
+  .option('--staged', 'Generate docs for staged changes')
+  .option('--label <text>', 'Label for the documentation')
+  .option('--model <name>', 'Ollama model')
+  .action(async (opts) => {
+    try {
+      const model = opts.model || program.opts().model || 'qwen3-coder';
+      setModel(model);
+      let content = '';
+      let label = opts.label || '';
+      if (opts.file) {
+        const { readFile } = await import('./fs-utils.js');
+        content = await readFile(opts.file);
+        if (!label) label = opts.file;
+      } else if (opts.staged) {
+        const r = getStagedDiff();
+        content = r.diff;
+        if (!label) label = 'staged changes';
+        if (!content.trim()) { console.error('No staged changes.'); process.exit(1); }
+      } else {
+        content = await readStdin();
+        if (!label) label = 'piped input';
+      }
+      if (!content.trim()) { console.error('Nothing to document. Use --file, --staged, or pipe input.'); process.exit(1); }
+      const prompt = buildDocsPrompt(content, label);
+      await runQuery(prompt);
+    } catch (err) {
+      if (err.message?.includes('ENOENT')) { console.error(`File not found: ${opts.file}`); }
+      else { console.error(`\nError: ${err.message}`); }
+      process.exit(1);
+    }
+  });
+
+program
+  .command('blame')
+  .description('Explain code with git blame annotations')
+  .argument('<file>', 'File to analyze')
+  .option('--lines <range>', 'Line range (e.g. "10-30")')
+  .option('--since <date>', 'Show blame entries newer than a date (e.g. "1 week ago")')
+  .option('--model <name>', 'Ollama model')
+  .action(async (file, opts) => {
+    try {
+      const model = opts.model || program.opts().model || 'qwen3-coder';
+      setModel(model);
+      const blameOutput = getBlame(file, { lines: opts.lines, since: opts.since });
+      if (!blameOutput.trim()) { console.error('No blame output.'); process.exit(1); }
+      const prompt = buildBlamePrompt(blameOutput, file);
+      await runQuery(prompt);
+    } catch (err) {
+      if (err.message?.includes('fatal:')) { console.error(`Git error: ${err.message.split('\n')[0]}`); }
+      else { console.error(`\nError: ${err.message}`); }
+      process.exit(1);
+    }
+  });
+
 const stash = program.command('stash').description('Manage and review git stashes');
 
 stash.command('list')
@@ -436,6 +494,8 @@ program
       console.log('  \x1b[90m  chat\x1b[0m               Interactive coding session');
       console.log('  \x1b[90m  diff <base> [head]\x1b[0m  PR-style code review between branches');
       console.log('  \x1b[90m  review\x1b[0m             Review code/diff from stdin, --file, or --staged');
+      console.log('  \x1b[90m  docs\x1b[0m               Generate documentation from code');
+      console.log('  \x1b[90m  blame <file>\x1b[0m        Explain code with git blame history');
       console.log('  \x1b[90m  stash list|show|review\x1b[0m  Manage and review git stashes');
       console.log('  \x1b[90m  commit\x1b[0m             Generate commit message from staged changes');
       console.log('  \x1b[90m  pr <base> [head]\x1b[0m    Generate PR description');

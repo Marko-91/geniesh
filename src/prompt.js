@@ -464,3 +464,57 @@ export function buildSystemPrompt(dir) {
   const info = detectProjectStructure(dir);
   return buildBaseRules(info);
 }
+
+export const DOCS_PROMPT = `
+Generate documentation for the code below.
+
+Include:
+- A high-level summary of what this code does and its purpose
+- For each exported function, class, or method: purpose, parameters, return value, and any notable edge cases
+- A short usage example for key functions
+- Document internal/private helpers briefly (1–2 lines each)
+
+Output as markdown. Be concise but thorough.`;
+
+export function buildDocsPrompt(content, label = '') {
+  const MAX = 50000;
+  const truncated = content.length > MAX
+    ? content.slice(0, MAX) + '\n… (content truncated)'
+    : content;
+  return `You are a senior technical writer generating documentation for source code.
+
+${DOCS_PROMPT}
+
+${label ? `## File\n${label}\n` : ''}
+## Source code
+\`\`\`
+${truncated}
+\`\`\``;
+}
+
+export const BLAME_PROMPT = `
+Below is a file with git blame annotations. Each line shows:
+<commit-hash> <author> (<date> <line-number>) <line-content>
+
+Group consecutive lines by the same commit and explain each change group:
+
+- What was changed (in terms of code semantics)
+- Why it was likely changed (based on the code and commit context)
+- Any patterns, concerns, or technical debt to note
+
+If multiple commits touched the same area, explain the evolution.`;
+
+export function buildBlamePrompt(blameOutput, filePath) {
+  const MAX = 30000;
+  const truncated = blameOutput.length > MAX
+    ? blameOutput.slice(0, MAX) + '\n… (blame output truncated)'
+    : blameOutput;
+  return `You are a senior engineer analyzing git blame history for ${filePath}.
+
+${BLAME_PROMPT}
+
+## Blame output
+\`\`\`
+${truncated}
+\`\`\``;
+}

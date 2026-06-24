@@ -48,3 +48,32 @@ export function getStagedDiff() {
 export function getRecentCommits(count = 5) {
   return git(`log --oneline -${count}`);
 }
+
+/**
+ * Get git blame output for a file with optional line range.
+ *
+ * @param {string} file  Path to the file
+ * @param {object} [opts]
+ * @param {string} [opts.lines]  Line range like "10-30"
+ * @param {string} [opts.since]  Date filter like "1 week ago"
+ * @returns {string}
+ */
+export function getBlame(file, opts = {}) {
+  let cmd = `blame --date=short`;
+  if (opts.lines) cmd += ` -L ${opts.lines}`;
+  if (opts.since) cmd += ` --since "${opts.since}"`;
+  cmd += ` -- "${file}"`;
+  return git(cmd, { maxBuffer: 5 * MB });
+}
+
+/**
+ * Get commit message for a given hash.
+ *
+ * @param {string} hash
+ * @returns {string}
+ */
+export function getCommitMessage(hash) {
+  const subject = git(`log --format="%s" -1 "${hash}"`);
+  const body = git(`log --format="%b" -1 "${hash}"`);
+  return body ? `${subject}\n\n${body}` : subject;
+}
