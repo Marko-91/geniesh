@@ -15,7 +15,20 @@ import { readFile, scanDir } from './fs-utils.js';
 const MAX_TURNS = 10;
 
 export async function startChat(modelName, dir, opts) {
-  const messages = [{ role: 'system', content: buildSystemPrompt(dir) }];
+  let systemPrompt = buildSystemPrompt(dir);
+
+  // Check for staged changes and add them to system context
+  try {
+    const stat = execSync('git diff --cached --stat', { encoding: 'utf-8', cwd: dir }).trim();
+    if (stat) {
+      const diff = execSync('git diff --cached', { encoding: 'utf-8', cwd: dir, maxBuffer: 10 * 1024 * 1024 }).trim();
+      const truncated = diff.length > 2000 ? diff.slice(0, 2000) + '\n… (diff truncated)' : diff;
+      const working = `## Staged changes\n\n\`\`\`diff\n${truncated}\n\`\`\``;
+      systemPrompt += `\n\n--- working changes ---\n${working}\n--- end working changes ---`;
+    }
+  } catch {} // not a git repo or no staged changes
+
+  const messages = [{ role: 'system', content: systemPrompt }];
 
   const modelInfo = await getModelInfo(modelName);
   const contextLimit = modelInfo.contextLength;
@@ -108,7 +121,9 @@ export async function startChat(modelName, dir, opts) {
       }
     }
 
+    const loadedContext = [];
     let contextMd = '';
+
     if (ctxMatch) {
       const symbols = ctxMatch[1].trim();
       const cs = ora(`ctx: ${symbols.slice(0, 60)}…`).start();
@@ -116,6 +131,7 @@ export async function startChat(modelName, dir, opts) {
         const result = await runGenx(symbols, dir);
         contextMd = result.content;
         cs.succeed();
+        loadedContext.push(`📎 Genx: ${symbols}`);
       } catch (err) { cs.fail(err.message); }
     }
 
@@ -123,13 +139,20 @@ export async function startChat(modelName, dir, opts) {
     if (fileMatch) {
       const rawPath = fileMatch[1] || fileMatch[2];
       const paths = rawPath.split(/[,\s]+/).map(s => s.trim()).filter(Boolean);
+      const loaded = [];
       for (const p of paths) {
         const absPath = p.startsWith('/') ? p : join(dir, p);
         const content = await readFile(absPath).catch(() => null);
         if (content) {
           fileContent += `## File: ${p}\n\n\`\`\`\n${content}\n\`\`\`\n\n`;
+          loaded.push(p);
         }
       }
+      if (loaded.length) loadedContext.push(`📄 Files: ${loaded.join(', ')}`);
+    }
+
+    if (searchMatch) {
+      loadedContext.push(`🌐 Web: "${searchMatch[1].trim()}"`);
     }
 
     let analyseContextMd = '';
@@ -142,6 +165,7 @@ export async function startChat(modelName, dir, opts) {
         analyseFileContent = result.fileContent;
         if (result.hitFiles.length) as.succeed(`found ${result.hitFiles.length} files`);
         else as.fail('no relevant files found');
+        if (result.hitFiles.length) loadedContext.push(`🔍 Analyse: ${result.hitFiles.join(', ')}`);
       } catch (err) { as.fail(err.message); }
     }
 
@@ -161,6 +185,9 @@ export async function startChat(modelName, dir, opts) {
 
     messages.push({ role: 'user', content: userParts.join('\n\n') });
 
+    if (loadedContext.length) {
+      console.log(loadedContext.join('\n'));
+    }
     process.stdout.write('\n\x1b[36mAssistant\x1b[0m:\n');
     try {
       const reply = await runChat(messages);
