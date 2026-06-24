@@ -10,6 +10,9 @@ geniesh chat --dir /path/to/project
 
 # One-shot analysis
 geniesh "explain the main loop" --file src/cli.js
+
+# PR-style code review between two branches
+geniesh diff main my-feature
 ```
 
 ## Features
@@ -21,7 +24,7 @@ geniesh "explain the main loop" --file src/cli.js
 - **Web search**: Paste URLs or use `/search "query"` to fetch web content
 - **RAG index**: Index a codebase for semantic search with `geniesh index`
 - **One-shot mode**: `geniesh "query" --file path` for non-interactive use
-- **Code review**: `geniesh review "query" --file path` (analysis + critique with two models)
+- **PR diff review**: `geniesh diff <base> [head]` — PR-style review of changes between branches with gap analysis
 - **Conversation compaction**: Automatic two-tier compaction when approaching context limit
 
 ## Requirements
@@ -45,6 +48,27 @@ You: How does the chat loop work?
 ```
 
 The file content persists in the conversation history, so the second turn reads it and answers accurately. This has been verified with qwen3:32b, qwen3-coder, and qwen2.5-coder:14b.
+
+## Diff review
+
+Analyze changes between two branches as a structured PR review.
+
+```bash
+# Review feature branch against main
+geniesh diff main my-feature
+
+# Review current branch against main (head defaults to HEAD)
+geniesh diff main
+
+# Use a different model
+geniesh diff main my-feature --model qwen2.5-coder:14b
+```
+
+The command:
+1. Computes the merge-base for true PR semantics
+2. Gathers commit log, diff stat, and full unified diff
+3. Feeds everything to the LLM with a structured review prompt
+4. Streams the review covering: summary, file-by-file review, gaps & risks, and suggestions
 
 ## Commands
 
@@ -78,10 +102,15 @@ Run `/budget` anytime for details.
 ```
 Chat loop ──► Ollama API ──► local LLM
     │
-    ├── /file ──► reads files into context
-    ├── /ctx  ──► mapx call-graph ──► genx context
-    ├── /edit ──► diff display ──► apply ──► syntax check
-    └── /search ──► DuckDuckGo API ──► fetch pages
+    ├── /file   ──► reads files into context
+    ├── /ctx    ──► mapx call-graph ──► genx context
+    ├── /edit   ──► diff display ──► apply ──► syntax check
+    ├── /search ──► DuckDuckGo API ──► fetch pages
+    │
+    └── CLI commands
+         ├── geniesh chat      ──► interactive REPL
+         ├── geniesh diff      ──► git merge-base ──► git diff ──► PR review
+         └── geniesh index     ──► RAG embedding index
 ```
 
 ## Related

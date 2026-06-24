@@ -134,6 +134,38 @@ Produce a structured plan for the requested change. Cover:
 Only use the context and files already provided.
 Wait for user confirmation before writing any code.`;
 
+export const DIFF_REVIEW_PROMPT = `
+You are reviewing a pull request. Below is the complete diff of proposed changes.
+
+Cover these areas in your review:
+1. **Summary** — What does this PR do? 2–3 sentence high-level overview.
+2. **File-by-file review** — For each changed file: what changed, why, code quality observations, potential bugs or edge cases.
+3. **Gaps & Risks** — Missing error handling, tests, security issues, regressions, or incomplete changes.
+4. **Suggestions** — Concrete, actionable improvements (with code examples where helpful).
+
+Cite specific line numbers and file paths from the diff. Be thorough but practical.`;
+
+export function buildDiffReviewPrompt(log, stat, diff) {
+  const MAX = 50000;
+  const truncated = diff.length > MAX
+    ? diff.slice(0, MAX) + '\n… (diff truncated, review the visible portion)'
+    : diff;
+  return `You are a senior engineer doing a pull request review.
+
+${DIFF_REVIEW_PROMPT}
+
+## Commits
+${log || '(no commit messages)'}
+
+## Diff Statistics
+${stat || '(no stats)'}
+
+## Full Diff
+\`\`\`diff
+${truncated}
+\`\`\``;
+}
+
 export function buildPrompt(query, chunks) {
   let context = '';
   for (const c of chunks) {

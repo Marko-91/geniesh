@@ -2,6 +2,7 @@
 
 import { Command } from 'commander';
 import { resolve } from 'path';
+import { execSync } from 'child_process';
 import { createRequire } from 'module';
 const require = createRequire(import.meta.url);
 const { version } = require('../package.json');
@@ -11,7 +12,7 @@ import { setModel, checkOllamaHealth } from './runner.js';
 import { setEmbedder } from './embedder.js';
 import { buildIndex, buildIndexFromFileList, loadIndex, indexExists } from './indexer.js';
 import { search } from './search.js';
-import { buildPrompt, buildDirectPrompt } from './prompt.js';
+import { buildPrompt, buildDirectPrompt, buildDiffReviewPrompt } from './prompt.js';
 import { readFile } from './fs-utils.js';
 import { extractFunction } from './extractor.js';
 import { runQuery } from './runner.js';
@@ -42,6 +43,35 @@ program
     const model = opts.model || program.opts().model || 'qwen3-coder';
     const dir = resolve(opts.dir || process.cwd());
     await startChat(model, dir, opts);
+  });
+
+program
+  .command('diff')
+  .description('PR-style review of changes between two branches')
+  .argument('<base>', 'Base branch (main, trunk, master, etc.)')
+  .argument('[head]', 'Feature branch (default: current HEAD)')
+  .option('--model <name>', 'Ollama model')
+  .action(async (base, head, opts) => {
+    try {
+      const model = opts.model || program.opts().model || 'qwen3-coder';
+      setModel(model);
+      if (!head) {
+        head = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim();
+      }
+      const mergeBase = execSync(`git merge-base "${base}" "${head}"`, { encoding: 'utf-8' }).trim();
+      const log = execSync(`git log --oneline "${mergeBase}..${head}"`, { encoding: 'utf-8' });
+      const stat = execSync(`git diff --stat "${mergeBase}..${head}"`, { encoding: 'utf-8' });
+      const diff = execSync(`git diff "${mergeBase}..${head}"`, { encoding: 'utf-8', maxBuffer: 1024 * 1024 });
+      if (!diff.trim()) { console.log('✓ No differences found — branches are identical.'); return; }
+      const prompt = buildDiffReviewPrompt(log, stat, diff);
+      console.log(`\n\x1b[36m📊 ${head}\x1b[0m → \x1b[33m${base}\x1b[0m  (merge-base: ${mergeBase.slice(0, 7)})\n`);
+      await runQuery(prompt);
+    } catch (err) {
+      if (err.message.includes('fatal:')) {
+        console.error(`Git error: ${err.message.split('\n')[0]}`);
+      } else { console.error(`\nError: ${err.message}`); }
+      process.exit(1);
+    }
   });
 
 program
