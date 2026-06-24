@@ -52,16 +52,17 @@ program
   .argument('[head]', 'Feature branch (default: current HEAD)')
   .option('--model <name>', 'Ollama model')
   .action(async (base, head, opts) => {
+    const MB = 1024 * 1024;
     try {
       const model = opts.model || program.opts().model || 'qwen3-coder';
       setModel(model);
       if (!head) {
-        head = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8' }).trim();
+        head = execSync('git rev-parse --abbrev-ref HEAD', { encoding: 'utf-8', maxBuffer: 1 * MB }).trim();
       }
-      const mergeBase = execSync(`git merge-base "${base}" "${head}"`, { encoding: 'utf-8' }).trim();
-      const log = execSync(`git log --oneline "${mergeBase}..${head}"`, { encoding: 'utf-8' });
-      const stat = execSync(`git diff --stat "${mergeBase}..${head}"`, { encoding: 'utf-8' });
-      const diff = execSync(`git diff "${mergeBase}..${head}"`, { encoding: 'utf-8', maxBuffer: 1024 * 1024 });
+      const mergeBase = execSync(`git merge-base "${base}" "${head}"`, { encoding: 'utf-8', maxBuffer: 1 * MB }).trim();
+      const log = execSync(`git log --oneline "${mergeBase}..${head}"`, { encoding: 'utf-8', maxBuffer: 5 * MB });
+      const stat = execSync(`git diff --stat "${mergeBase}..${head}"`, { encoding: 'utf-8', maxBuffer: 5 * MB });
+      const diff = execSync(`git diff "${mergeBase}..${head}"`, { encoding: 'utf-8', maxBuffer: 50 * MB });
       if (!diff.trim()) { console.log('✓ No differences found — branches are identical.'); return; }
       const prompt = buildDiffReviewPrompt(log, stat, diff);
       console.log(`\n\x1b[36m📊 ${head}\x1b[0m → \x1b[33m${base}\x1b[0m  (merge-base: ${mergeBase.slice(0, 7)})\n`);
@@ -69,6 +70,8 @@ program
     } catch (err) {
       if (err.message.includes('fatal:')) {
         console.error(`Git error: ${err.message.split('\n')[0]}`);
+      } else if (err.code === 'ENOBUFS') {
+        console.error('Diff too large — output exceeded buffer. Try a smaller scope or use --model with larger context.');
       } else { console.error(`\nError: ${err.message}`); }
       process.exit(1);
     }
