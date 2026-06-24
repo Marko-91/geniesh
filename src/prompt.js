@@ -166,6 +166,85 @@ ${truncated}
 \`\`\``;
 }
 
+export const COMMIT_PROMPT = `
+Generate a conventional commit message from the staged diff below.
+
+Output ONLY the commit message — no commentary, no markdown, no backticks.
+
+Format:
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+
+Rules:
+- Subject: imperative mood, no period, max 72 chars
+- Body: explain what and why (not how), wrap at 72 chars
+- Footer: "BREAKING CHANGE: ..." or "Closes #..." if applicable
+- Types: feat, fix, refactor, test, docs, style, chore, perf, ci, build, revert`;
+
+export function buildCommitPrompt(diff, recentLog) {
+  const MAX = 30000;
+  const truncated = diff.length > MAX
+    ? diff.slice(0, MAX) + '\n… (diff truncated)' : diff;
+  return `You are generating a git commit message.
+
+${COMMIT_PROMPT}
+
+## Recent commits (for style reference)
+${recentLog || '(none)'}
+
+## Staged diff
+\`\`\`diff
+${truncated}
+\`\`\``;
+}
+
+export const PR_PROMPT = `
+Generate a pull request description in markdown format from the diff below.
+
+Start with a line:
+Title: <short PR title>
+
+Then the body covering:
+
+## Summary
+What does this PR do? 2–3 sentences.
+
+## Changes
+Key changes with brief explanations, grouped by area.
+
+## Testing notes
+How was this tested? What testing is still needed?
+
+## Checklist
+- [ ] Code follows project conventions
+- [ ] Tests added/updated
+- [ ] Documentation updated (if needed)
+
+Be concise and factual. Reference issue numbers if mentioned in commits.`;
+
+export function buildPrPrompt(log, stat, diff) {
+  const MAX = 50000;
+  const truncated = diff.length > MAX
+    ? diff.slice(0, MAX) + '\n… (diff truncated)' : diff;
+  return `You are writing a GitHub pull request description.
+
+${PR_PROMPT}
+
+## Commits
+${log || '(no commit messages)'}
+
+## Diff Statistics
+${stat || '(no stats)'}
+
+## Full Diff
+\`\`\`diff
+${truncated}
+\`\`\``;
+}
+
 export function buildPrompt(query, chunks) {
   let context = '';
   for (const c of chunks) {

@@ -13,6 +13,12 @@ geniesh "explain the main loop" --file src/cli.js
 
 # PR-style code review between two branches
 geniesh diff main my-feature
+
+# Generate a commit message from staged changes
+git add -A && geniesh commit
+
+# Generate a PR description between branches
+geniesh pr main my-feature
 ```
 
 ## Features
@@ -25,6 +31,8 @@ geniesh diff main my-feature
 - **RAG index**: Index a codebase for semantic search with `geniesh index`
 - **One-shot mode**: `geniesh "query" --file path` for non-interactive use
 - **PR diff review**: `geniesh diff <base> [head]` — PR-style review of changes between branches with gap analysis
+- **Commit messages**: `geniesh commit` — generate conventional commit messages from staged changes
+- **PR descriptions**: `geniesh pr <base> [head]` — generate markdown PR descriptions, optionally create via `--open`
 - **Conversation compaction**: Automatic two-tier compaction when approaching context limit
 
 ## Requirements
@@ -70,6 +78,46 @@ The command:
 3. Feeds everything to the LLM with a structured review prompt
 4. Streams the review covering: summary, file-by-file review, gaps & risks, and suggestions
 
+## Commit messages
+
+Generate conventional commit messages from staged changes.
+
+```bash
+# Generate from staged changes
+geniesh commit
+
+# Print without committing
+geniesh commit --dry-run
+
+# Auto-stage all tracked files first
+geniesh commit --all
+```
+
+The command:
+1. Reads staged diff via `git diff --cached`
+2. Generates a conventional commit message (type, scope, subject, body)
+3. Displays it for review: `Y` to commit, `e` to edit, `n` to cancel
+
+## PR descriptions
+
+Generate a pull request description from changes between two branches.
+
+```bash
+# Generate PR description (streams to stdout)
+geniesh pr main my-feature
+
+# Create the PR via GitHub CLI
+geniesh pr main my-feature --open
+
+# Current branch vs main
+geniesh pr main
+```
+
+The command:
+1. Same merge-base logic as `diff`
+2. LLM generates a markdown PR description with title, summary, changes, testing notes, and checklist
+3. With `--open`: creates the PR via `gh pr create`
+
 ## Commands
 
 | Command | Description |
@@ -110,6 +158,8 @@ Chat loop ──► Ollama API ──► local LLM
     └── CLI commands
          ├── geniesh chat      ──► interactive REPL
          ├── geniesh diff      ──► git merge-base ──► git diff ──► PR review
+         ├── geniesh commit    ──► git diff --cached ──► commit message ──► git commit
+         ├── geniesh pr        ──► git merge-base ──► PR description
          └── geniesh index     ──► RAG embedding index
 ```
 
